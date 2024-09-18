@@ -1,0 +1,4 @@
+1. DPSGD, ADPSGD, ADFED
+2. cifar10, stl10
+3. resnet20/18, vgg16
+4. iid, niid
