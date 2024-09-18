@@ -16,6 +16,8 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
+num_clients = 4
+num_nodes_list = [5, 5, 7, 7]
 
 # Define transformations for the dataset
 # transform = transforms.Compose([
@@ -25,7 +27,7 @@ transform = transforms.Compose([
     transforms.Resize((32, 32)),
     transforms.ToTensor(),
     # transforms.Normalize((0.1307,), (0.3081,))
-    transforms.Normalize((0.5,), (0.5,))
+    # transforms.Normalize((0.5,), (0.5,))
 ])
 
 # Load the CIFAR-10 training dataset
@@ -66,19 +68,19 @@ test_dataset_full = torchvision.datasets.FashionMNIST(
 # client_indices = np.array_split(indices, 4)
 
 total_samples = len(train_dataset)
-fraction = 0.25  # Change to 0.3 for 30%
+fraction = 0.01  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
 
 # Generate random indices for the subset
-indices = list(range(total_samples))
+total_indices = list(range(total_samples))
 # random.shuffle(indices)
 # subset_indices = indices[:num_samples]
 
 
 client_indices = []
-for _ in range(24):
-    random.shuffle(indices)
-    subset_indices = indices[:num_samples]
+for _ in range(num_clients):
+    # random.shuffle(indices)
+    subset_indices = total_indices[:total_samples]
     client_indices.append(subset_indices)
 
 parameters_lock = [threading.Lock() for _ in range(4)]
@@ -87,18 +89,23 @@ numpara_lock = [threading.Lock() for _ in range(4)]
 
 def customize_topology():
     topology = list()
-    topology.append([1, 2, 3])
-    topology.append([0, 2, 3])
-    topology.append([0, 1, 3])
-    topology.append([0, 1, 2])
+    for i in range(num_clients):
+        topology.append([(i-1+num_clients) % num_clients,
+                        (i+1+num_clients) % num_clients])
+    # topology.append([1, 2, 3])
+    # topology.append([0, 2, 3])
+    # topology.append([0, 1, 3])
+    # topology.append([0, 1, 2])
     return topology
 
 
 def create_iid_splits(dataset, indices, num_nodes):
-    node_indices = [list() for _ in range(num_nodes)]
-    for id in indices:
-        x = np.random.randint(0, 4)
-        node_indices[x].append(id)
+    # node_indices = [list() for _ in range(num_nodes)]
+    node_indices = list()
+    for _ in range(num_nodes):
+        random.shuffle(indices)
+        subset_indices = indices[:num_samples]
+        node_indices.append(subset_indices)
     return node_indices
 
 
@@ -147,31 +154,116 @@ class SimpleCNN(nn.Module):
 
 
 class ComplexCNN(nn.Module):
-    def __init__(self, input_channel=3, num_classes=10):
+    def __init__(self, input_channel=1, num_classes=10):
         super(ComplexCNN, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3),
+            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
             nn.Tanh(),
             nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.Tanh(),
             nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.Tanh(),
             # nn.MaxPool2d(kernel_size=2),
         )
 
         self.classifier = nn.Sequential(
-            nn.Linear(128*6*6, 512),
+            nn.Linear(128*8*8, 512),
             nn.Tanh(),
             nn.Linear(512, num_classes),
         )
 
     def forward(self, x):
         x = self.features(x)
+        # print("111 ",x.shape)
         x = torch.flatten(x, 1)
+        # print("222 ",x.shape)
         x = self.classifier(x)
         return x
+
+# Define the BasicBlock for ResNet
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(
+            in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(
+                    in_planes,
+                    self.expansion * planes,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                nn.BatchNorm2d(self.expansion * planes),
+            )
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
+
+# Define the ResNet class
+
+
+class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10):
+        super(ResNet, self).__init__()
+        self.in_planes = 16
+
+        self.conv1 = nn.Conv2d(
+            1, 16, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(16)
+        self.relu = nn.ReLU(inplace=True)
+        # For CIFAR-10, the first layer has 16 filters
+        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear = nn.Linear(64 * block.expansion, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        # First block can have stride
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))  # Initial convolution
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avgpool(out)  # Global average pooling
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+# Function to create ResNet-20
+
+
+def resnet20():
+    return ResNet(BasicBlock, [3, 3, 3])
 
 
 class Node(threading.Thread):
@@ -227,11 +319,11 @@ class Client(threading.Thread):
         self.dataset = dataset
         # Initialize global model if not provided
         # self.global_model = global_model if global_model else SimpleCNN()
-        self.global_model = global_model if global_model else ComplexCNN(
-            input_channel=1)
+        self.global_model = global_model if global_model else ComplexCNN()
+        # self.global_model = global_model if global_model else resnet20()
         self.num_clients = num_clients
         # self.received_models = []  # List to store models received from other clients
-        self.received_models = list()
+        self.received_models = Queue()
         self.received_models_q = Queue()
         self.aggregator_queue = Queue()  # Queue to collect gradients from nodes
         self.clients_list = clients_list  # Reference to other clients
@@ -291,15 +383,15 @@ class Client(threading.Thread):
             for idx, grad in enumerate(gradients):
                 aggregated_gradients[idx] += grad
         # Average the gradients
-        aggregated_gradients = [
+        self.aggregated_gradients = [
             grad / num_nodes for grad in aggregated_gradients]
         # Update global model parameters
-        self.global_model.train()
-        # with torch.no_grad():
-        for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
-            # param -= 0.001 * grad  # Update rule with learning rate 0.01
-            param.grad = grad
-        self.optimizer.step()
+        # self.global_model.train()
+        # # with torch.no_grad():
+        # for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
+        #     # param -= 0.001 * grad  # Update rule with learning rate 0.01
+        #     param.grad = grad
+        # self.optimizer.step()
 
     def communicate(self):
         """
@@ -324,13 +416,40 @@ class Client(threading.Thread):
                 print(
                     f"Client {self.client_id} sent model parameters to Client {client_id}.")
 
+                # update the parameter if receive others'
+                if self.received_models_q.qsize() != 0:
+                    tmp_received_models = []
+                    for _ in range(self.received_models_q.qsize()):
+                        tmp_model = self.received_models_q.get()
+                        tmp_received_models.append(tmp_model)
+                        self.received_models.put(tmp_model)
+                    tmp_received_models.append(self.global_model)
+                    state_dicts = [model.state_dict()
+                                   for model in tmp_received_models]
+                    # Get keys from the state_dict
+                    param_keys = state_dicts[0].keys()
+                    # Initialize new state_dict for averaged parameters
+                    averaged_state_dict = {}
+                    for key in param_keys:
+                        # Sum parameters from all models
+                        params = [state_dict[key]
+                                  for state_dict in state_dicts]
+                        # Stack parameters and compute mean
+                        stacked_params = torch.stack(params, dim=0)
+                        averaged_param = torch.mean(stacked_params, dim=0)
+                        averaged_state_dict[key] = averaged_param
+                    # Load averaged parameters into the global model
+                    self.global_model.load_state_dict(averaged_state_dict)
+
     def average_models(self):
         """
         Averages the received models to update the local global model.
         """
         while True:
             # time.sleep(0.1)
-            if self.received_models_q.qsize() == len(self.joint_clients):
+            # if self.received_models_q.qsize() == len(self.joint_clients):
+            #     break
+            if self.received_models.qsize()+self.received_models_q.qsize() == len(self.joint_clients):
                 break
             # parameters_lock[self.client_id].acquire()
             # print("client, received, joint", self.client_id, len(
@@ -339,33 +458,46 @@ class Client(threading.Thread):
             #     break
             # parameters_lock[self.client_id].release()
         # num_models = len(self.received_models)
-        for _ in range(len(self.joint_clients)):
-            self.received_models.append(self.received_models_q.get())
-        print(
-            f"Client {self.client_id} received {len(self.received_models)} model parameters.")
-        # # if not self.received_models:
-        # if num_models == 0:
-        #     return  # No models received
-        # Include own model in averaging
-        self.received_models.append(self.global_model)
-        # Average parameters using state_dict
-        # Collect state_dicts from all models
-        state_dicts = [model.state_dict() for model in self.received_models]
-        # Get keys from the state_dict
-        param_keys = state_dicts[0].keys()
-        # Initialize new state_dict for averaged parameters
-        averaged_state_dict = {}
-        for key in param_keys:
-            # Sum parameters from all models
-            params = [state_dict[key] for state_dict in state_dicts]
-            # Stack parameters and compute mean
-            stacked_params = torch.stack(params, dim=0)
-            averaged_param = torch.mean(stacked_params, dim=0)
-            averaged_state_dict[key] = averaged_param
-        # Load averaged parameters into the global model
-        self.global_model.load_state_dict(averaged_state_dict)
-        # Clear received models for the next round
-        self.received_models = []
+        if self.received_models.qsize() == len(self.joint_clients):
+            self.global_model.train()
+            for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                param.grad = grad
+            self.optimizer.step()
+        else:
+            for _ in range(len(self.joint_clients)):
+                self.received_models.put(self.received_models_q.get())
+            print(
+                f"Client {self.client_id} received {self.received_models.qsize()} model parameters.")
+            # # if not self.received_models:
+            # if num_models == 0:
+            #     return  # No models received
+            # Include own model in averaging
+            self.received_models.put(self.global_model)
+            # Average parameters using state_dict
+            # Collect state_dicts from all models
+            state_dicts = [self.received_models.get().state_dict()
+                           for i in range(self.received_models.qsize())]
+            # Get keys from the state_dict
+            param_keys = state_dicts[0].keys()
+            # Initialize new state_dict for averaged parameters
+            averaged_state_dict = {}
+            for key in param_keys:
+                # Sum parameters from all models
+                params = [state_dict[key] for state_dict in state_dicts]
+                # Stack parameters and compute mean
+                stacked_params = torch.stack(params, dim=0)
+                averaged_param = torch.mean(stacked_params, dim=0)
+                averaged_state_dict[key] = averaged_param
+            # Load averaged parameters into the global model
+            self.global_model.load_state_dict(averaged_state_dict)
+            # Clear received models for the next round
+            self.received_models = Queue()
+            self.global_model.train()
+            for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                param.grad = grad
+            self.optimizer.step()
 
 # Define test function
 
@@ -419,8 +551,9 @@ for round_num in range(num_rounds):
         indices = list(range(total_samples))
         random.shuffle(indices)
         subset_indices = indices[:num_samples]
-        
-        node_indices_list = create_iid_splits(train_dataset, c_indices, 4)
+
+        node_indices_list = create_iid_splits(
+            train_dataset, c_indices, num_nodes_list[i])
         # Use the previous global_model if exists
         global_model = clients_global_models[i]
         client = Client(i, node_indices_list, train_dataset,
