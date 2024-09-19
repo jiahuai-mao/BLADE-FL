@@ -63,7 +63,7 @@ numpara_lock = [threading.Lock() for _ in range(4)]
 def customize_topology():
     topology = list()
     for i in range(24):
-        topology.append([(i-1+24)%24, (i+1+24)%24])
+        topology.append([(i-1+24) % 24, (i+1+24) % 24])
     return topology
 
 
@@ -105,7 +105,7 @@ def generate_doubly_stochastic_matrix(n, tol=1e-10, max_iter=1000):
     """
     # Start with a random positive matrix
     A = np.random.rand(n, n)
-    
+
     # Iteratively normalize rows and columns
     for _ in range(max_iter):
         # Normalize rows
@@ -119,6 +119,7 @@ def generate_doubly_stochastic_matrix(n, tol=1e-10, max_iter=1000):
         print("Warning: Maximum iterations reached before convergence.")
     return A
 
+
 # Example usage
 n = 5  # Size of the matrix
 W_k = generate_doubly_stochastic_matrix(n)
@@ -127,6 +128,7 @@ print("Doubly stochastic matrix A:")
 # print(A)
 print("\nRow sums:", W_k.sum(axis=1))
 print("Column sums:", W_k.sum(axis=0))
+
 
 class SimpleCNN(nn.Module):
     """
@@ -344,7 +346,7 @@ class Client(threading.Thread):
                     copy.deepcopy(self.global_model))
                 print(
                     f"Client {self.client_id} sent model parameters to Client {client_id}.")
-                
+
                 if self.received_models_q.qsize() != 0:
                     tmp_received_models = []
                     for _ in range(self.received_models_q.qsize()):
@@ -352,14 +354,16 @@ class Client(threading.Thread):
                         tmp_received_models.append(tmp_model)
                         self.received_models.put(tmp_model)
                     tmp_received_models.append(self.global_model)
-                    state_dicts = [model.state_dict() for model in tmp_received_models]
+                    state_dicts = [model.state_dict()
+                                   for model in tmp_received_models]
                     # Get keys from the state_dict
                     param_keys = state_dicts[0].keys()
                     # Initialize new state_dict for averaged parameters
                     averaged_state_dict = {}
                     for key in param_keys:
                         # Sum parameters from all models
-                        params = [state_dict[key] for state_dict in state_dicts]
+                        params = [state_dict[key]
+                                  for state_dict in state_dicts]
                         # Stack parameters and compute mean
                         stacked_params = torch.stack(params, dim=0)
                         averaged_param = torch.mean(stacked_params, dim=0)
@@ -383,10 +387,10 @@ class Client(threading.Thread):
             # parameters_lock[self.client_id].release()
         # num_models = len(self.received_models)
         if self.received_models.qsize() == len(self.joint_clients):
-            for param, grad in zip(self.global_model.parameters(), self.gradients):
-            # param -= 0.001 * grad  # Update rule with learning rate 0.01
-                param.grad = grad
             self.global_model.train()
+            for param, grad in zip(self.global_model.parameters(), self.gradients):
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                param.grad = grad
             self.optimizer.step()
         else:
             for _ in range(self.received_models_q.qsize()):
@@ -400,7 +404,8 @@ class Client(threading.Thread):
             self.received_models.put(self.global_model)
             # Average parameters using state_dict
             # Collect state_dicts from all models
-            state_dicts = [self.received_models.get().state_dict() for i in range(self.received_models.qsize())]
+            state_dicts = [self.received_models.get().state_dict()
+                           for i in range(self.received_models.qsize())]
             # Get keys from the state_dict
             param_keys = state_dicts[0].keys()
             # Initialize new state_dict for averaged parameters
@@ -416,7 +421,12 @@ class Client(threading.Thread):
             self.global_model.load_state_dict(averaged_state_dict)
             # self.optimizer.zero_grad()
             # Clear received models for the next round
-            self.received_models = []
+            self.received_models = Queue()
+            self.global_model.train()
+            for param, grad in zip(self.global_model.parameters(), self.gradients):
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                param.grad = grad
+            self.optimizer.step()
 
 # Define test function
 
@@ -430,7 +440,7 @@ def test_global_model(global_model, test_loader):
     criterion = nn.CrossEntropyLoss()
     with torch.no_grad():
         for data, target in test_loader:
-            data,target = data.cuda(),target.cuda()
+            data, target = data.cuda(), target.cuda()
             output = global_model(data)
             loss = criterion(output, target)
             total_loss += loss.item() * data.size(0)
