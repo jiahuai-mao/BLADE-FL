@@ -384,10 +384,6 @@ def test_global_model(global_model, test_loader):
     average_loss = total_loss / total
     return accuracy, average_loss
 
-
-# Number of clients
-# num_clients = 24
-
 # Initialize clients' global models (None at the start)
 clients_global_models = [None] * number_of_clients
 joint_clients = customize_topology()
