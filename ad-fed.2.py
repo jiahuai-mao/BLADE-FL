@@ -31,21 +31,26 @@ transform = transforms.Compose(
 train_dataset = torchvision.datasets.FashionMNIST(
     root="./data", train=True, download=True, transform=transform
 )
-test_dataset_full = torchvision.datasets.FashionMNIST(
-    root="./data", train=False, download=True, transform=transform
-)
 
+
+# Run the simulation for 10 rounds
+num_rounds = 2
 total_samples = len(train_dataset)
-fraction = 0.25  # Change to 0.3 for 30%
+fraction = 0.05  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
-
 total_indices = list(range(total_samples))
-
 
 client_indices = []
 for _ in range(num_clients):
     subset_indices = total_indices[:total_samples]
     client_indices.append(subset_indices)
+
+random.shuffle(total_indices)
+# test_dataset_full = torchvision.datasets.FashionMNIST(
+#     root="./data", train=False, download=True, transform=transform
+# )
+test_dataset_full = Subset(
+    train_dataset, total_indices[:int(total_samples*0.3)])
 
 
 def customize_topology():
@@ -411,13 +416,13 @@ def test_global_model(global_model, test_loader):
 clients_global_models = [ComplexCNN() for _ in range(num_clients)]
 joint_clients = customize_topology()
 # Lists to store accuracy and loss trends
-accuracy_list = []
-loss_list = []
 # Prepare test loader
 test_loader = DataLoader(test_dataset_full, batch_size=32, shuffle=False)
-# Run the simulation for 10 rounds
-num_rounds = 100
 
+
+best_acc, best_round = 0.0, 0
+accuracy_list = []
+loss_list = []
 
 for round_num in range(num_rounds):
     print(f"\n=== Round {round_num + 1} ===")
@@ -462,6 +467,16 @@ for round_num in range(num_rounds):
     accuracy, avg_loss = test_global_model(global_model, test_loader)
     accuracy_list.append(accuracy)
     loss_list.append(avg_loss)
+    if accuracy >= best_acc:
+        best_acc = accuracy
+        best_round = round_num
     print(
         f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
     )
+
+with open("./results/res_{}.txt", "wt") as f:
+    for i in range(len(accuracy_list)):
+        acc = accuracy_list[i]
+        loss = loss_list[i]
+        f.write("round {}, acc {}, loss {}, best acc {}, best round {}".format(
+            i, acc, loss, best_acc, best_round))
