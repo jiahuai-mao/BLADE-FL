@@ -17,7 +17,7 @@ torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
 num_clients = 4
-num_nodes_list = [5, 5, 7, 7]
+num_nodes_list = [6, 6, 6, 6]
 
 transform = transforms.Compose(
     [
@@ -141,7 +141,7 @@ class Node(threading.Thread):
         # Perform forward and backward passes to compute gradients
         # self.local_model = self.local_model.cuda()
         self.local_model.train()
-        self.local_model.zero_grad()
+        # self.local_model.zero_grad()
         for data, target in self.data_loader:
             data = data.cuda()
             target = target.cuda()
