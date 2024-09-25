@@ -142,21 +142,30 @@ class Node(threading.Thread):
         self.updated_model = None  # Placeholder for the updated model
 
     def run(self):
-        # Local training
-        self.local_model.train()
-        for epoch in range(self.num_local_epochs):
-            for data, target in self.data_loader:
-                data = data.to(device)
-                target = target.to(device)
-                self.optimizer.zero_grad()
-                output = self.local_model(data)
-                loss = self.criterion(output, target)
-                loss.backward()
-                self.optimizer.step()
-            self.scheduler.step()
-        # After training, save the updated model state_dict
-        self.updated_model = copy.deepcopy(self.local_model.state_dict())
-        print(f"{self.node_id} completed local training.")
+        try:
+            # Local training
+            self.local_model.train()
+            for epoch in range(self.num_local_epochs):
+                for data, target in self.data_loader:
+                    data = data.to(device)
+                    target = target.to(device)
+                    self.optimizer.zero_grad()
+                    output = self.local_model(data)
+                    loss = self.criterion(output, target)
+                    loss.backward()
+                    self.optimizer.step()
+                self.scheduler.step()
+            # After training, save the updated model state_dict
+            self.updated_model = copy.deepcopy(self.local_model.state_dict())
+            print(f"{self.node_id} completed local training.")
+        except Exception as e:
+            print(f"Exception occurred in {self.node_id}: {e}")
+            # Handle the exception and set updated_model to None
+            if self.updated_model is None:
+                # Use the initial global model or handle accordingly
+                self.updated_model = copy.deepcopy(
+                    self.local_model.state_dict())
+
 
 # Client class representing individual clients
 
@@ -205,8 +214,13 @@ class Client(threading.Thread):
             f"Client {self.client_id} updated global model by averaging with other clients.")
 
     def aggregate_and_update(self, collected_models):
-        # Average models from nodes
-        state_dicts = collected_models
+        # Filter out None models
+        state_dicts = [
+            model for model in collected_models if model is not None]
+        if not state_dicts:
+            print(f"Client {self.client_id}: No models to aggregate.")
+            return  # Or handle accordingly
+
         param_keys = state_dicts[0].keys()
         averaged_state_dict = {}
         num_models = len(state_dicts)
@@ -214,10 +228,8 @@ class Client(threading.Thread):
             params = [state_dict[key] for state_dict in state_dicts]
             stacked_params = torch.stack(params, dim=0)
             if torch.is_floating_point(stacked_params):
-                # Floating point tensors can be averaged
                 averaged_param = torch.mean(stacked_params, dim=0)
             else:
-                # For integer tensors, take the value from the first model
                 averaged_param = stacked_params[0]
             averaged_state_dict[key] = averaged_param
         self.global_model.load_state_dict(averaged_state_dict)
