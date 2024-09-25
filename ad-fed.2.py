@@ -34,9 +34,9 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 
 # Run the simulation for 10 rounds
-num_rounds = 2
+num_rounds = 200
 total_samples = len(train_dataset)
-fraction = 0.05  # Change to 0.3 for 30%
+fraction = 0.3  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
