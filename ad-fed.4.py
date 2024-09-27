@@ -255,6 +255,7 @@ class Node(threading.Thread):
         # Send gradients to aggregator
         self.aggregator_queue.put(self.gradients)
         print(f"{self.node_id} sent gradients to aggregator.")
+# I have to check the grads in each batch is same or not. In other words, the grads that were put in aggregator_queue are the final batch-generated or with full iteration.
 
 
 class Client(threading.Thread):
@@ -386,7 +387,7 @@ class Client(threading.Thread):
                         tmp_model = self.received_models_q.get()
                         tmp_received_models.append(tmp_model)
                         self.received_models.put(tmp_model)
-                    tmp_received_models.append(self.global_model)
+                    # tmp_received_models.append(self.global_model)
                     state_dicts = [model.state_dict()
                                    for model in tmp_received_models]
                     # Get keys from the state_dict

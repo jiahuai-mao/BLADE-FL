@@ -1,64 +1,62 @@
-# federated_learning_simulation.py
+import threading
 import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
-import random
-import numpy as np
-import threading
-import copy
-import os
-from queue import Queue
 from torch.utils.data import DataLoader, Subset
+import numpy as np
+import random
+import copy
+import time
+from queue import Queue
 
-# Set random seeds for reproducibility
 seed = 0
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
-# Set device to GPU if available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 num_clients = 4
-num_nodes_list = [6, 6, 6, 6]  # Number of nodes per client
+num_nodes_list = [6, 6, 6, 6]
 
-# Define transformations for the dataset
-transform = transforms.Compose([
-    transforms.Resize((32, 32)),
-    transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,))
-])
+transform = transforms.Compose(
+    [
+        transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+        # transforms.Normalize((0.5,), (0.5,))
+        transforms.Normalize((0.1307,), (0.3081,))
+    ]
+)
 
-# Load the FashionMNIST dataset
 train_dataset = torchvision.datasets.FashionMNIST(
     root="./data", train=True, download=True, transform=transform
 )
 
-# Run the simulation for 200 rounds
+
+# Run the simulation for 10 rounds
 num_rounds = 200
+batch_size = 512
 total_samples = len(train_dataset)
-fraction = 0.3  # Use 30% of the dataset
+fraction = 0.5  # 
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
-# Shuffle and split indices among clients
+client_indices = []
+for _ in range(num_clients):
+    subset_indices = total_indices[:total_samples]
+    client_indices.append(subset_indices)
+
 random.shuffle(total_indices)
-split_indices = np.array_split(total_indices, num_clients)
-client_indices = [indices.tolist() for indices in split_indices]
-
-# Prepare test dataset using a portion of the training data
+# test_dataset_full = torchvision.datasets.FashionMNIST(
+#     root="./data", train=False, download=True, transform=transform
+# )
 test_dataset_full = Subset(
-    train_dataset, total_indices[:int(total_samples * 0.3)]
-)
-
-# Define the topology among clients
+    train_dataset, total_indices[:int(total_samples*0.3)])
 
 
 def customize_topology():
-    topology = []
+    topology = list()
     for i in range(num_clients):
         topology.append(
             [(i - 1 + num_clients) % num_clients,
@@ -66,21 +64,90 @@ def customize_topology():
         )
     return topology
 
-# Create IID splits among nodes
-
 
 def create_iid_splits(dataset, indices, num_nodes):
-    node_indices = []
-    random.shuffle(indices)
-    split_indices = np.array_split(indices, num_nodes)
-    for subset in split_indices:
-        node_indices.append(subset.tolist())
+    node_indices = list()
+    for _ in range(num_nodes):
+        random.shuffle(indices)
+        subset_indices = indices[:num_samples]
+        node_indices.append(subset_indices)
     return node_indices
 
-# Define the ComplexCNN model with improvements
+
+def create_noniid_splits(dataset, indices, num_nodes):
+    """
+    Splits the data among nodes in a non-IID manner.
+    Each node gets data from certain classes only.
+    """
+    labels = np.array(dataset.targets)[indices]
+    classes = np.unique(labels)
+    np.random.shuffle(classes)
+    class_splits = np.array_split(classes, num_nodes)
+    node_indices = []
+    for class_split in class_splits:
+        idx = [i for i, label in zip(indices, labels) if label in class_split]
+        node_indices.append(idx)
+    return node_indices
+
+
+def print_class_distribution(dataset, indices, title="Dataset"):
+    """
+    Prints the class distribution (counts and ratios) for a given set of indices.
+
+    Args:
+        dataset: The full dataset (e.g., train_dataset).
+        indices: A list of indices representing the subdataset.
+        title: A string title to identify the subdataset.
+    """
+    from collections import Counter
+
+    # Extract labels for the given indices
+    labels = [int(dataset.targets[idx]) for idx in indices]
+
+    # Count occurrences of each class label
+    label_counts = Counter(labels)
+
+    total_count = sum(label_counts.values())
+    print_str = f"\nClass distribution in {title}:\n"
+    for label in sorted(label_counts.keys()):
+        count = label_counts[label]
+        ratio = count / total_count
+        print_str = print_str + \
+            f"  Class {label}: Count {count}, Ratio {ratio:.4f}\n"
+    print(print_str)
 
 
 class ComplexCNN(nn.Module):
+    def __init__(self, input_channel=1, num_classes=10):
+        super(ComplexCNN, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2),
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(128 * 8 * 8, 512),
+            nn.Tanh(),
+            nn.Linear(512, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        # print("111 ",x.shape)
+        x = torch.flatten(x, 1)
+        # print("222 ",x.shape)
+        x = self.classifier(x)
+        return x
+
+
+class ComplexCNN_(nn.Module):
     def __init__(self, input_channel=1, num_classes=10):
         super(ComplexCNN, self).__init__()
         self.features = nn.Sequential(
@@ -95,13 +162,14 @@ class ComplexCNN(nn.Module):
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
+            # Optional: Add another pooling layer if needed
             nn.MaxPool2d(kernel_size=2),
         )
 
         self.classifier = nn.Sequential(
+            # Adjust input size if additional pooling is added
             nn.Linear(128 * 4 * 4, 512),
             nn.ReLU(),
-            nn.Dropout(p=0.5),
             nn.Linear(512, num_classes),
         )
 
@@ -111,165 +179,324 @@ class ComplexCNN(nn.Module):
         x = self.classifier(x)
         return x
 
-# Function to initialize weights
 
+class ComplexCNN_(nn.Module):
+    def __init__(self, input_channel=1, num_classes=10):
+        super(ComplexCNN, self).__init__()
+        # First convolutional layer
+        self.conv1 = nn.Conv2d(
+            in_channels=input_channel, out_channels=32, kernel_size=3, padding=1)
+        # Second convolutional layer
+        self.conv2 = nn.Conv2d(
+            in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        # Max pooling layer
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        # Dropout layer to prevent overfitting
+        self.dropout = nn.Dropout(p=0.25)
+        # Fully connected layer
+        self.fc1 = nn.Linear(in_features=64 * 7 * 7, out_features=128)
+        # Output layer
+        self.fc2 = nn.Linear(in_features=128, out_features=num_classes)
 
-def weights_init(m):
-    if isinstance(m, nn.Conv2d):
-        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-        if m.bias is not None:
-            nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.Linear):
-        nn.init.normal_(m.weight, 0, 0.01)
-        nn.init.constant_(m.bias, 0)
-
-# Node class representing individual nodes
+    def forward(self, x):
+        # Convolutional layer 1 + ReLU activation
+        x = F.relu(self.conv1(x))
+        # Convolutional layer 2 + ReLU activation
+        x = F.relu(self.conv2(x))
+        # Max pooling
+        x = self.pool(x)
+        # Flatten the tensor
+        x = x.view(-1, 64 * 7 * 7)
+        # Fully connected layer + ReLU activation
+        x = F.relu(self.fc1(x))
+        # Dropout
+        x = self.dropout(x)
+        # Output layer
+        x = self.fc2(x)
+        return x
 
 
 class Node(threading.Thread):
-    def __init__(self, node_id, data_indices, dataset, global_model):
+    """
+    Represents a node in the network.
+    Each node performs local training and computes gradients.
+    """
+
+    def __init__(self, node_id, data_indices, dataset, global_model, aggregator_queue):
         threading.Thread.__init__(self)
         self.node_id = node_id
         self.data_loader = DataLoader(
-            Subset(dataset, data_indices), batch_size=32, shuffle=True, num_workers=2
+            Subset(dataset, data_indices), batch_size=batch_size, shuffle=True
         )
-        self.local_model = copy.deepcopy(global_model).to(device)
+        self.local_model = copy.deepcopy(global_model).cuda()
         self.criterion = nn.CrossEntropyLoss()
-        self.num_local_epochs = 5  # Number of local training epochs
-        self.optimizer = optim.Adam(self.local_model.parameters(), lr=0.001)
-        self.scheduler = optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=1, gamma=0.9)
-        self.updated_model = None  # Placeholder for the updated model
+        self.gradients = None  # Placeholder for storing gradients
+        # Queue to send gradients to aggregator
+        self.aggregator_queue = aggregator_queue
 
     def run(self):
-        try:
-            # Local training
-            self.local_model.train()
-            for epoch in range(self.num_local_epochs):
-                for data, target in self.data_loader:
-                    data = data.to(device)
-                    target = target.to(device)
-                    self.optimizer.zero_grad()
-                    output = self.local_model(data)
-                    loss = self.criterion(output, target)
-                    loss.backward()
-                    self.optimizer.step()
-                self.scheduler.step()
-            # After training, save the updated model state_dict
-            self.updated_model = copy.deepcopy(self.local_model.state_dict())
-            print(f"{self.node_id} completed local training.")
-        except Exception as e:
-            print(f"Exception occurred in {self.node_id}: {e}")
-            # Handle the exception and set updated_model to None
-            if self.updated_model is None:
-                # Use the initial global model or handle accordingly
-                self.updated_model = copy.deepcopy(
-                    self.local_model.state_dict())
-
-
-# Client class representing individual clients
+        print(f"{self.node_id} starting local training.")
+        # Perform forward and backward passes to compute gradients
+        # self.local_model = self.local_model.cuda()
+        self.local_model.train()
+        # self.local_model.zero_grad()
+        for data, target in self.data_loader:
+            data = data.cuda()
+            target = target.cuda()
+            output = self.local_model(data)
+            loss = self.criterion(output, target)
+            loss.backward()
+            # break
+            # break  # For demonstration, we only process one batch
+        # Extract gradients
+        self.gradients = [
+            param.grad.clone() for param in self.local_model.cpu().parameters()
+        ]
+        # Send gradients to aggregator
+        self.aggregator_queue.put(self.gradients)
+        print(f"{self.node_id} sent gradients to aggregator.")
 
 
 class Client(threading.Thread):
-    def __init__(self, client_id, node_indices_list, dataset, num_clients, clients_list, joint_clients, global_model=None):
+    """
+    Represents a client that manages its nodes and communicates with other clients.
+    """
+
+    def __init__(
+        self,
+        client_id,
+        node_indices_list,
+        dataset,
+        num_clients,
+        clients_list,
+        joint_clients,
+        global_model=None,
+    ):
         threading.Thread.__init__(self)
         self.client_id = client_id
         self.nodes = []
         self.dataset = dataset
-        self.global_model = global_model or ComplexCNN()
-        self.global_model.apply(weights_init)
-        self.global_model.to(device)
+        # Initialize global model if not provided\
+        self.global_model = global_model
         self.num_clients = num_clients
+        # self.received_models = []  # List to store models received from other clients
+        self.received_models = Queue()
         self.received_models_q = Queue()
-        self.clients_list = clients_list
+        self.aggregator_queue = Queue()  # Queue to collect gradients from nodes
+        self.clients_list = clients_list  # Reference to other clients
         self.joint_clients = joint_clients
+        # self.optimizer = torch.optim.Adam(
+        #     self.global_model.parameters(), lr=0.001)
+        self.optimizer = torch.optim.SGD(
+            self.global_model.parameters(), lr=0.003, momentum=0.9, weight_decay=5e-4
+        )
+        self.criterion = nn.CrossEntropyLoss()
+        # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
+        self.dataloader = DataLoader(
+            Subset(dataset, total_indices[:int(total_samples*fraction)]), batch_size=batch_size, shuffle=True)
+
         # Initialize nodes
         for i, node_indices in enumerate(node_indices_list):
+            # print_class_distribution(
+            #     dataset, node_indices, title=f"Client {client_id} Node {i}")
             node = Node(
                 f"Client{client_id}_Node{i}",
                 node_indices,
                 dataset,
-                self.global_model
+                self.global_model,
+                self.aggregator_queue,
             )
             self.nodes.append(node)
 
     def run(self):
+        print(f"Client {self.client_id} starting.")
         # Start all nodes under this client
         for node in self.nodes:
             node.start()
+        # Collect gradients from nodes
+        collected_gradients = []
+        for _ in self.nodes:
+            gradients = self.aggregator_queue.get()
+            collected_gradients.append(gradients)
         # Wait for all nodes to complete
         for node in self.nodes:
             node.join()
-        print(
-            f"Client {self.client_id} collected all updated models from nodes.")
-        # Aggregate models and update the global model
-        collected_models = [node.updated_model for node in self.nodes]
-        self.aggregate_and_update(collected_models)
+        print(f"Client {self.client_id} collected all gradients.")
+        # Aggregate gradients and update the global model
+        self.aggregate_and_update(collected_gradients)
         print(f"Client {self.client_id} has updated the global model.")
-        # Communicate updated model to other clients
+        # Communicate updated model parameters to other clients
         self.communicate()
-        # Average received models from other clients
+        print(f"Client {self.client_id} finished communication.")
+        # Average the received models to update the local model
         self.average_models()
         print(
-            f"Client {self.client_id} updated global model by averaging with other clients.")
+            f"Client {self.client_id} updated its model by averaging received models."
+        )
 
-    def aggregate_and_update(self, collected_models):
-        # Filter out None models
-        state_dicts = [
-            model for model in collected_models if model is not None]
-        if not state_dicts:
-            print(f"Client {self.client_id}: No models to aggregate.")
-            return  # Or handle accordingly
-
-        param_keys = state_dicts[0].keys()
-        averaged_state_dict = {}
-        num_models = len(state_dicts)
-        for key in param_keys:
-            params = [state_dict[key] for state_dict in state_dicts]
-            stacked_params = torch.stack(params, dim=0)
-            if torch.is_floating_point(stacked_params):
-                averaged_param = torch.mean(stacked_params, dim=0)
-            else:
-                averaged_param = stacked_params[0]
-            averaged_state_dict[key] = averaged_param
-        self.global_model.load_state_dict(averaged_state_dict)
+    def aggregate_and_update(self, collected_gradients):
+        """
+        Aggregates gradients from all nodes and updates the global model.
+        """
+        # Initialize aggregated gradients
+        aggregated_gradients = [
+            torch.zeros_like(param) for param in self.global_model.parameters()
+        ]
+        num_nodes = len(collected_gradients)
+        # Sum gradients from all nodes
+        for gradients in collected_gradients:
+            for idx, grad in enumerate(gradients):
+                aggregated_gradients[idx] += grad
+        # Average the gradients
+        self.aggregated_gradients = [
+            grad / num_nodes for grad in aggregated_gradients]
+        # Update global model parameters
+        # self.global_model.train()
+        # # with torch.no_grad():
+        # for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
+        #     # param -= 0.001 * grad  # Update rule with learning rate 0.01
+        #     param.grad = grad
+        # self.optimizer.step()
 
     def communicate(self):
-        # Send updated global model to neighboring clients
-        for client_id in self.joint_clients:
-            if client_id != self.client_id:
+        """
+        Sends the updated model parameters to all other clients.
+        """
+        for client_id in range(self.num_clients):
+            # if client_id != self.client_id:
+            # print("communicate, self.id, client id",
+            #       self.client_id, client_id, self.joint_clients)
+            if (client_id in self.joint_clients) and (client_id != self.client_id):
                 target_client = self.clients_list[client_id]
+                # Send (copy) the global model parameters to the target client
+                # print(
+                #     f"client {self.client_id} send model para to target client {target_client.client_id}")
+                # parameters_lock[client_id].acquire()
+                # print("++++++++")
+                # target_client.received_models.append(
+                #     copy.deepcopy(self.global_model))
+                # parameters_lock[client_id].release()
                 target_client.received_models_q.put(
-                    copy.deepcopy(self.global_model.state_dict()))
+                    copy.deepcopy(self.global_model))
                 print(
-                    f"Client {self.client_id} sent model to Client {client_id}.")
+                    f"Client {self.client_id} sent model parameters to Client {client_id}."
+                )
+
+                # update the parameter if receive others'
+                if self.received_models_q.qsize() != 0:
+                    tmp_received_models = []
+                    for _ in range(self.received_models_q.qsize()):
+                        tmp_model = self.received_models_q.get()
+                        tmp_received_models.append(tmp_model)
+                        self.received_models.put(tmp_model)
+                    tmp_received_models.append(self.global_model)
+                    state_dicts = [model.state_dict()
+                                   for model in tmp_received_models]
+                    # Get keys from the state_dict
+                    param_keys = state_dicts[0].keys()
+                    # Initialize new state_dict for averaged parameters
+                    averaged_state_dict = {}
+                    for key in param_keys:
+                        # Sum parameters from all models
+                        params = [state_dict[key]
+                                  for state_dict in state_dicts]
+                        # Stack parameters and compute mean
+                        stacked_params = torch.stack(params, dim=0)
+                        averaged_param = torch.mean(stacked_params, dim=0)
+                        averaged_state_dict[key] = averaged_param
+                    # Load averaged parameters into the global model
+                    self.global_model.load_state_dict(averaged_state_dict)
+
+                print(
+                    "target client ",
+                    target_client.client_id,
+                    target_client.received_models.qsize(),
+                    target_client.received_models_q.qsize(),
+                    len(target_client.joint_clients),
+                )
 
     def average_models(self):
-        # Average received global models from other clients
-        num_models_to_receive = len(self.joint_clients) - 1  # Exclude self
-        received_state_dicts = []
-        while len(received_state_dicts) < num_models_to_receive:
-            if not self.received_models_q.empty():
-                model_state_dict = self.received_models_q.get()
-                received_state_dicts.append(model_state_dict)
-        # Include own global model in averaging
-        received_state_dicts.append(self.global_model.state_dict())
-        # Average parameters
-        param_keys = received_state_dicts[0].keys()
-        averaged_state_dict = {}
-        num_models = len(received_state_dicts)
-        for key in param_keys:
-            params = [state_dict[key] for state_dict in received_state_dicts]
-            stacked_params = torch.stack(params, dim=0)
-            if torch.is_floating_point(stacked_params):
-                # Floating point tensors can be averaged
+        """
+        Averages the received models to update the local global model.
+        """
+        while True:
+            if (self.received_models.qsize() + self.received_models_q.qsize()) == len(
+                self.joint_clients
+            ):
+                break
+        tmp_model = copy.deepcopy(self.global_model).cuda()
+        if self.received_models.qsize() == len(self.joint_clients):
+            tmp_model.train()
+            for data, target in self.dataloader:
+                data = data.cuda()
+                target = target.cuda()
+                output = tmp_model(data)
+                loss = self.criterion(output, target)
+                loss.backward()
+            tmp_gradients = [
+                param.grad.clone() for param in tmp_model.cpu().parameters()
+            ]
+            self.aggregated_gradients = [
+                (grad1+grad2) / 2.0 for grad1, grad2 in zip(self.aggregated_gradients, tmp_gradients)]
+            for param, grad in zip(
+                self.global_model.parameters(), self.aggregated_gradients
+            ):
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                param.grad = grad
+            self.optimizer.step()
+            # self.received_models = Queue()
+            # print(f"client {self.client_id}, averge model 1")
+        else:
+            for _ in range(self.received_models_q.qsize()):
+                self.received_models.put(self.received_models_q.get())
+            print(
+                f"Client {self.client_id} received {self.received_models.qsize()} model parameters."
+            )
+            # # if not self.received_models:
+            # if num_models == 0:
+            #     return  # No models received
+            # Include own model in averaging
+            self.received_models.put(self.global_model)
+            # Average parameters using state_dict
+            # Collect state_dicts from all models
+            state_dicts = [
+                self.received_models.get().state_dict()
+                for i in range(self.received_models.qsize())
+            ]
+            # Get keys from the state_dict
+            param_keys = state_dicts[0].keys()
+            # Initialize new state_dict for averaged parameters
+            averaged_state_dict = {}
+            for key in param_keys:
+                # Sum parameters from all models
+                params = [state_dict[key] for state_dict in state_dicts]
+                # Stack parameters and compute mean
+                stacked_params = torch.stack(params, dim=0)
                 averaged_param = torch.mean(stacked_params, dim=0)
-            else:
-                # For integer tensors, take the value from the first model
-                averaged_param = stacked_params[0]
-            averaged_state_dict[key] = averaged_param
-        # Update global model
-        self.global_model.load_state_dict(averaged_state_dict)
+                averaged_state_dict[key] = averaged_param
+            # Load averaged parameters into the global model
+            self.global_model.load_state_dict(averaged_state_dict)
+            # Clear received models for the next round
+            # self.received_models = Queue()
+            tmp_model.train()
+            for data, target in self.dataloader:
+                data = data.cuda()
+                target = target.cuda()
+                output = tmp_model(data)
+                loss = self.criterion(output, target)
+                loss.backward()
+            tmp_gradients = [
+                param.grad.clone() for param in tmp_model.cpu().parameters()
+            ]
+            self.aggregated_gradients = [
+                (grad1+grad2) / 2.0 for grad1, grad2 in zip(self.aggregated_gradients, tmp_gradients)]
+            for param, grad in zip(
+                self.global_model.parameters(), self.aggregated_gradients
+            ):
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                param.grad = grad
+            self.optimizer.step()
+        print(f"client {self.client_id}, averge model.")
 
 
 # Define test function
@@ -277,19 +504,17 @@ class Client(threading.Thread):
 
 def test_global_model(global_model, test_loader):
     global_model.eval()
-    global_model.to(device)
     correct = 0
     total = 0
     total_loss = 0.0
     criterion = nn.CrossEntropyLoss()
     with torch.no_grad():
         for data, target in test_loader:
-            data = data.to(device)
-            target = target.to(device)
             output = global_model(data)
             loss = criterion(output, target)
             total_loss += loss.item() * data.size(0)
             _, predicted = torch.max(output.data, 1)
+            # print(predicted)
             total += target.size(0)
             correct += (predicted == target).sum().item()
     accuracy = correct / total
@@ -297,73 +522,71 @@ def test_global_model(global_model, test_loader):
     return accuracy, average_loss
 
 
-# Initialize clients' global models
-clients_global_models = [ComplexCNN().to(device) for _ in range(num_clients)]
-for model in clients_global_models:
-    model.apply(weights_init)
+if __name__ == "__main__":
+    f = open("./results/res_{}_{}.txt".format(num_clients,
+             "-".join([str(i) for i in num_nodes_list])), "a+")
+    # Initialize clients' global models (None at the start)
+    clients_global_models = [ComplexCNN() for _ in range(num_clients)]
+    joint_clients = customize_topology()
+    # Lists to store accuracy and loss trends
+    # Prepare test loader
+    test_loader = DataLoader(
+        test_dataset_full, batch_size=batch_size, shuffle=False)
 
-joint_clients = customize_topology()
+    best_acc, best_round = 0.0, 0
+    accuracy_list = []
+    loss_list = []
 
-# Prepare test loader
-test_loader = DataLoader(test_dataset_full, batch_size=32,
-                         shuffle=False, num_workers=2)
+    for round_num in range(num_rounds):
+        print(f"\n=== Round {round_num + 1} ===")
+        # Create a list to hold clients for this round
+        clients_list = []
+        # Create clients and their nodes for this round
+        for i, c_indices in enumerate(client_indices):
+            # node_indices_list = create_noniid_splits(train_dataset, c_indices, 4)
 
-if not os.path.exists('./results'):
-    os.makedirs('./results')
-
-best_acc, best_round = 0.0, 0
-accuracy_list = []
-loss_list = []
-
-for round_num in range(num_rounds):
-    print(f"\n=== Round {round_num + 1} ===")
-    # Create a list to hold clients for this round
-    clients_list = []
-    # Create clients and their nodes for this round
-    for i, c_indices in enumerate(client_indices):
-        node_indices_list = create_iid_splits(
-            train_dataset, c_indices, num_nodes_list[i]
+            node_indices_list = create_iid_splits(
+                train_dataset, c_indices, num_nodes_list[i]
+            )
+            # Use the previous global_model if exists
+            global_model = clients_global_models[i]
+            client = Client(
+                i,
+                node_indices_list,
+                train_dataset,
+                num_clients,
+                clients_list,
+                joint_clients[i],
+                global_model=global_model,
+            )
+            clients_list.append(client)
+        # Update clients_list in each client
+        for client in clients_list:
+            client.clients_list = clients_list
+        # Start all clients
+        for client in clients_list:
+            client.start()
+        # Wait for all clients to complete
+        for client in clients_list:
+            client.join()
+        # Store the updated global models for the next round
+        clients_global_models = [
+            client.global_model for client in clients_list]
+        # Optionally, you can evaluate the global model here
+        # For example, test accuracy on a validation set
+        # Store the updated global models for the next round
+        # clients_global_models = [client.global_model for client in clients_list]
+        # Evaluate the global model (using the first client's model)
+        global_model = clients_global_models[0]
+        accuracy, avg_loss = test_global_model(global_model, test_loader)
+        accuracy_list.append(accuracy)
+        loss_list.append(avg_loss)
+        if accuracy >= best_acc:
+            best_acc = accuracy
+            best_round = round_num
+        print(
+            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
         )
-        # Use the previous global_model if exists
-        global_model = clients_global_models[i]
-        client = Client(
-            i,
-            node_indices_list,
-            train_dataset,
-            num_clients,
-            clients_list,
-            joint_clients[i],
-            global_model=global_model
-        )
-        clients_list.append(client)
-    # Update clients_list in each client
-    for client in clients_list:
-        client.clients_list = clients_list
-    # Start all clients
-    for client in clients_list:
-        client.start()
-    # Wait for all clients to complete
-    for client in clients_list:
-        client.join()
-    # Store the updated global models for the next round
-    clients_global_models = [client.global_model for client in clients_list]
-    # Evaluate the global model (using the first client's model)
-    global_model = clients_global_models[0]
-    accuracy, avg_loss = test_global_model(global_model, test_loader)
-    accuracy_list.append(accuracy)
-    loss_list.append(avg_loss)
-    if accuracy >= best_acc:
-        best_acc = accuracy
-        best_round = round_num + 1
-    print(
-        f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
-    )
-
-# Write results to file
-filename = "./results/res_{}.txt".format(seed)
-with open(filename, "wt") as f:
-    for i in range(len(accuracy_list)):
-        acc = accuracy_list[i]
-        loss = loss_list[i]
-        f.write("round {}, acc {:.4f}, loss {:.4f}, best acc {:.4f}, best round {}\n".format(
-            i + 1, acc, loss, best_acc, best_round))
+        f.write("round {}, acc {}, loss {}, best acc {}, best round {}\n".format(
+                round_num, accuracy, avg_loss, best_acc, best_round))
+        f.flush()
