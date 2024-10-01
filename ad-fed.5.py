@@ -36,7 +36,7 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 
 # Run the simulation for 10 rounds
-num_rounds = 300
+num_rounds = 200
 batch_size = 512
 total_samples = len(train_dataset)
 fraction = 0.5  # Change to 0.3 for 30%
@@ -53,7 +53,7 @@ random.shuffle(total_indices)
 #     root="./data", train=False, download=True, transform=transform
 # )
 test_dataset_full = Subset(
-    train_dataset, total_indices[:int(total_samples*fraction)])
+    train_dataset, total_indices[:int(total_samples*0.3)])
 
 
 def customize_topology():
@@ -242,73 +242,28 @@ class Node(threading.Thread):
         self.local_model.train()
         # self.local_model.zero_grad()
         gradient_list = []
-        # iter = 0
-        # Hyperparameters for Adam optimizer
-        lr = 0.01       # Learning rate
-        beta1 = 0.9     # Exponential decay rate for the first moment estimates
-        beta2 = 0.999   # Exponential decay rate for the second moment estimates
-        epsilon = 1e-8  # Small value to prevent division by zero
-
-        # Initialize moment vectors and time step
-        m = []
-        v = []
-        t = 0  # Time step
-        for name, param in enumerate(self.local_model.parameters()):
-            # m[name] = torch.zeros_like(param)
-            # v[name] = torch.zeros_like(param)
-            m.append(0)
-            v.append(0)
-            gradient_list.append(0)
+        iter = 0
         for data, target in self.data_loader:
             data = data.cuda()
             target = target.cuda()
             output = self.local_model(data)
             loss = self.criterion(output, target)
-
-            self.local_model.zero_grad()
             loss.backward()
-            t += 1
-            tmp = []
-            for name, param in enumerate(self.local_model.parameters()):
-                if param.grad is not None:
-                    grad = param.grad.clone().detach().cpu()
-
-                    # Update first moment estimate
-                    m[name] = beta1 * m[name] + (1 - beta1) * grad
-
-                    # Update second moment estimate
-                    v[name] = beta2 * v[name] + (1 - beta2) * grad * grad
-
-                    # Compute bias-corrected first moment estimate
-                    m_hat = m[name] / (1 - beta1 ** t)
-
-                    # Compute bias-corrected second moment estimate
-                    v_hat = v[name] / (1 - beta2 ** t)
-
-                    # Update parameters
-                    tmp.append(
-                        lr * m_hat / (torch.sqrt(v_hat) + epsilon))
-            # gradient_list.append(tmp)
-            # iter += 1
+            iter += 1
             if len(gradient_list) == 0:
                 gradient_list = [
-                    grad for grad in tmp
+                    param.grad.clone().detach().cpu() for param in self.local_model.parameters()
                 ]
             else:
                 gradient_list = [
-                    grad1 + grad2
-                    for grad1, grad2 in zip(gradient_list, tmp)
+                    grad + param.grad.clone().detach().cpu()
+                    for grad, param in zip(gradient_list, self.local_model.parameters())
                 ]
             # break
             # break  # For demonstration, we only process one batch
         # Extract gradients
-        self.gradients = [grad / t for grad in gradient_list]
+        self.gradients = [grad / iter for grad in gradient_list]
         # self.gradients = [grad.cuda() for grad in self.gradients]
-        # self.gradients = [
-        #     param.grad.clone().detach().cpu() for param in self.local_model.cpu().parameters()
-        # ]
-        # self.gradients = [1.0*grad/len(gradient_list)
-        #                   for grad in gradient_list]
         # Send gradients to aggregator
         self.aggregator_queue.put(self.gradients)
         print(f"{self.node_id} sent gradients to aggregator.")
@@ -543,9 +498,9 @@ class Client(threading.Thread):
             for param, grad in zip(
                 self.global_model.parameters(), self.aggregated_gradients
             ):
-                param -= grad  # Update rule with learning rate 0.01
-                # param.grad = grad
-            # self.optimizer.step()
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                param.grad = grad
+            self.optimizer.step()
         print(f"client {self.client_id}, averge model complete.")
 
 
