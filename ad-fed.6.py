@@ -10,6 +10,10 @@ import random
 import copy
 import time
 from queue import Queue
+import os
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+os.environ['TORCH_USE_CUDA_DSA'] = "1"
 
 seed = 0
 random.seed(seed)
@@ -17,9 +21,11 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
-num_clients = 4
+num_clients = 1
+# num_clients = 4
 # num_nodes_list = [6, 6, 6, 6]
-num_nodes_list = [1, 1, 1, 1]
+# num_nodes_list = [2, 2, 2, 2]
+num_nodes_list = [1]
 
 transform = transforms.Compose(
     [
@@ -36,24 +42,28 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 
 # Run the simulation for 10 rounds
-num_rounds = 200
+num_rounds = 30000
 batch_size = 512
 total_samples = len(train_dataset)
-fraction = 0.5  # Change to 0.3 for 30%
+fraction = 0.26  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
 client_indices = []
-for _ in range(num_clients):
-    subset_indices = total_indices[:total_samples]
+for i in range(num_clients):
+    subset_indices = total_indices[i*num_samples:(i+1)*num_samples]
     client_indices.append(subset_indices)
+
+# for i in range(num_clients):
+#     subset_indices = total_indices[i*num_samples:(i+1)*num_samples]
+#     client_indices.append(subset_indices)
 
 random.shuffle(total_indices)
 # test_dataset_full = torchvision.datasets.FashionMNIST(
 #     root="./data", train=False, download=True, transform=transform
 # )
 test_dataset_full = Subset(
-    train_dataset, total_indices[:int(total_samples*0.3)])
+    train_dataset, total_indices[:int(total_samples*fraction)])
 
 
 def customize_topology():
@@ -70,7 +80,7 @@ def create_iid_splits(dataset, indices, num_nodes):
     node_indices = list()
     for _ in range(num_nodes):
         random.shuffle(indices)
-        subset_indices = indices[:num_samples]
+        subset_indices = indices[:batch_size*2]
         node_indices.append(subset_indices)
     return node_indices
 
@@ -148,72 +158,64 @@ class ComplexCNN(nn.Module):
         return x
 
 
-class ComplexCNN_(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
+class VGG16(nn.Module):
+    def __init__(self, input_channel=1, output_size=10):
+        super(VGG16, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(input_channel, 4, kernel_size=3, padding=1),
             nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(4, 4, kernel_size=3, padding=1),
             nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.Tanh(),
-            # Optional: Add another pooling layer if needed
-            nn.MaxPool2d(kernel_size=2),
-        )
+            # nn.MaxPool2d(kernel_size=2, stride=2),
 
+            nn.Conv2d(4, 8, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(8, 8, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(8, 16, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(16, 16, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(16, 16, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh()
+            # nn.MaxPool2d(kernel_size=2, stride=2)
+        )
         self.classifier = nn.Sequential(
-            # Adjust input size if additional pooling is added
-            nn.Linear(128 * 4 * 4, 512),
+            nn.Linear(32 * 32 * 32, 1024),
             nn.Tanh(),
-            nn.Linear(512, num_classes),
+            nn.Dropout(),
+            nn.Linear(1024, 1024),
+            nn.Tanh(),
+            nn.Dropout(),
+            nn.Linear(1024, output_size)
+            # nn.Softmax(dim=1)
         )
 
     def forward(self, x):
+        # x = x.reshape([-1, 1, 7, 8])
+        # print("x = ", x.shape)
         x = self.features(x)
-        x = torch.flatten(x, 1)
+        x = x.view(x.size(0), -1)
+        # print("x.view = ", x.shape, "linear = ", 32*32*32)
         x = self.classifier(x)
-        return x
-
-
-class ComplexCNN_(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
-        # First convolutional layer
-        self.conv1 = nn.Conv2d(
-            in_channels=input_channel, out_channels=32, kernel_size=3, padding=1)
-        # Second convolutional layer
-        self.conv2 = nn.Conv2d(
-            in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        # Max pooling layer
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        # Dropout layer to prevent overfitting
-        self.dropout = nn.Dropout(p=0.25)
-        # Fully connected layer
-        self.fc1 = nn.Linear(in_features=64 * 7 * 7, out_features=128)
-        # Output layer
-        self.fc2 = nn.Linear(in_features=128, out_features=num_classes)
-
-    def forward(self, x):
-        # Convolutional layer 1 + ReLU activation
-        x = F.relu(self.conv1(x))
-        # Convolutional layer 2 + ReLU activation
-        x = F.relu(self.conv2(x))
-        # Max pooling
-        x = self.pool(x)
-        # Flatten the tensor
-        x = x.view(-1, 64 * 7 * 7)
-        # Fully connected layer + ReLU activation
-        x = F.relu(self.fc1(x))
-        # Dropout
-        x = self.dropout(x)
-        # Output layer
-        x = self.fc2(x)
         return x
 
 
@@ -225,6 +227,7 @@ class Node(threading.Thread):
 
     def __init__(self, node_id, data_indices, dataset, global_model, aggregator_queue):
         threading.Thread.__init__(self)
+        # print(batch_size, len(data_indices))
         self.node_id = node_id
         self.data_loader = DataLoader(
             Subset(dataset, data_indices), batch_size=batch_size, shuffle=True
@@ -242,31 +245,78 @@ class Node(threading.Thread):
         self.local_model.train()
         # self.local_model.zero_grad()
         gradient_list = []
-        iter = 0
+        # iter = 0
+        # Hyperparameters for Adam optimizer
+        lr = 0.001       # Learning rate
+        beta1 = 0.9     # Exponential decay rate for the first moment estimates
+        beta2 = 0.999   # Exponential decay rate for the second moment estimates
+        epsilon = 1e-8  # Small value to prevent division by zero
+
+        # Initialize moment vectors and time step
+        m = []
+        v = []
+        t = 0  # Time step
+        for name, param in enumerate(self.local_model.parameters()):
+            # m[name] = torch.zeros_like(param)
+            # v[name] = torch.zeros_like(param)
+            m.append(0)
+            v.append(0)
+            gradient_list.append(0)
         for data, target in self.data_loader:
             data = data.cuda()
             target = target.cuda()
             output = self.local_model(data)
             loss = self.criterion(output, target)
+
+            # self.local_model.zero_grad()
             loss.backward()
-            iter += 1
-            if len(gradient_list) == 0:
-                gradient_list = [
-                    param.grad.clone().detach().cpu() for param in self.local_model.parameters()
-                ]
-            else:
-                gradient_list = [
-                    grad + param.grad.clone().detach().cpu()
-                    for grad, param in zip(gradient_list, self.local_model.parameters())
-                ]
-            # break
+            t += 1
+            tmp = []
+            # for name, param in enumerate(self.local_model.parameters()):
+            # if param.grad is not None:
+            #     grad = param.grad.clone().detach().cpu()
+
+            #     # Update first moment estimate
+            #     m[name] = beta1 * m[name] + (1 - beta1) * grad
+
+            #     # Update second moment estimate
+            #     v[name] = beta2 * v[name] + (1 - beta2) * grad * grad
+
+            #     # Compute bias-corrected first moment estimate
+            #     m_hat = m[name] / (1 - beta1 ** t)
+
+            #     # Compute bias-corrected second moment estimate
+            #     v_hat = v[name] / (1 - beta2 ** t)
+
+            #     # Update parameters
+            #     tmp.append(
+            #         m_hat / (torch.sqrt(v_hat) + epsilon))
+
+            # gradient_list.append(tmp)
+            # iter += 1
+            # if len(gradient_list) == 0:
+            #     gradient_list = [
+            #         grad for grad in tmp
+            #     ]
+            # else:
+            #     gradient_list = [
+            #         grad1 + grad2
+            #         for grad1, grad2 in zip(gradient_list, tmp)
+            #     ]
+            break
             # break  # For demonstration, we only process one batch
         # Extract gradients
-        self.gradients = [grad / iter for grad in gradient_list]
+        # self.gradients = [grad / t for grad in gradient_list]
         # self.gradients = [grad.cuda() for grad in self.gradients]
+        self.gradients = [
+            param.grad.clone().detach().cpu() for param in self.local_model.cpu().parameters()
+        ]
+        # self.gradients = [1.0*grad/len(gradient_list)
+        #                   for grad in gradient_list]
         # Send gradients to aggregator
         self.aggregator_queue.put(self.gradients)
         print(f"{self.node_id} sent gradients to aggregator.")
+        del (self.local_model)
 # I have to check the grads in each batch is same or not. In other words,
 # the grads that were put in aggregator_queue are the final batch-generated or with full iteration.
 
@@ -302,7 +352,7 @@ class Client(threading.Thread):
         # self.optimizer = torch.optim.Adam(
         #     self.global_model.parameters(), lr=0.001)
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=0.003, momentum=0.9, weight_decay=5e-4
+            self.global_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
         )
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
@@ -388,7 +438,7 @@ class Client(threading.Thread):
                 #     copy.deepcopy(self.global_model))
                 # parameters_lock[client_id].release()
                 target_client.received_models_q.put(
-                    copy.deepcopy(self.global_model))
+                    copy.deepcopy(self.global_model.state_dict()))
                 print(
                     f"Client {self.client_id} sent model parameters to Client {client_id}."
                 )
@@ -401,8 +451,9 @@ class Client(threading.Thread):
                         tmp_received_models.append(tmp_model)
                         self.received_models.put(tmp_model)
                     # tmp_received_models.append(self.global_model)
-                    state_dicts = [model.state_dict()
-                                   for model in tmp_received_models]
+                    # state_dicts = [model.state_dict()
+                    #                for model in tmp_received_models]
+                    state_dicts = tmp_received_models
                     # Get keys from the state_dict
                     param_keys = state_dicts[0].keys()
                     # Initialize new state_dict for averaged parameters
@@ -458,6 +509,8 @@ class Client(threading.Thread):
                 self.global_model.parameters(), self.aggregated_gradients
             ):
                 # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                # if param.grad is not None:
+                #     param.data -= grad
                 param.grad = grad
             self.optimizer.step()
             # self.received_models = Queue()
@@ -472,11 +525,11 @@ class Client(threading.Thread):
             # if num_models == 0:
             #     return  # No models received
             # Include own model in averaging
-            self.received_models.put(self.global_model)
+            self.received_models.put(self.global_model.state_dict())
             # Average parameters using state_dict
             # Collect state_dicts from all models
             state_dicts = [
-                self.received_models.get().state_dict()
+                self.received_models.get()
                 for i in range(self.received_models.qsize())
             ]
             # Get keys from the state_dict
@@ -498,7 +551,9 @@ class Client(threading.Thread):
             for param, grad in zip(
                 self.global_model.parameters(), self.aggregated_gradients
             ):
-                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                # if param.grad is not None:
+                #     param.data -= grad  # Modify the data directly
+                # param -= grad  # Update rule with learning rate 0.01
                 param.grad = grad
             self.optimizer.step()
         print(f"client {self.client_id}, averge model complete.")
@@ -528,10 +583,13 @@ def test_global_model(global_model, test_loader):
 
 
 if __name__ == "__main__":
-    f = open("./results/res_{}_{}.txt".format(num_clients,
+    import torch.multiprocessing as mp
+    mp.set_start_method('spawn', force=True)
+    f = open("./results/res_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
-    clients_global_models = [ComplexCNN() for _ in range(num_clients)]
+    clients_global_models = [VGG16() for _ in range(num_clients)]
+    # clients_global_models = [ComplexCNN() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     # Prepare test loader
@@ -549,10 +607,10 @@ if __name__ == "__main__":
         # Create clients and their nodes for this round
         for i, c_indices in enumerate(client_indices):
             # node_indices_list = create_noniid_splits(train_dataset, c_indices, 4)
-
             node_indices_list = create_iid_splits(
                 train_dataset, c_indices, num_nodes_list[i]
             )
+
             # Use the previous global_model if exists
             global_model = clients_global_models[i]
             client = Client(
@@ -575,6 +633,7 @@ if __name__ == "__main__":
         for client in clients_list:
             client.join()
         # Store the updated global models for the next round
+        clients_global_models.clear()
         clients_global_models = [
             client.global_model for client in clients_list]
         # Optionally, you can evaluate the global model here
@@ -592,6 +651,10 @@ if __name__ == "__main__":
         print(
             f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
         )
-        f.write("round {}, acc {}, loss {}, best acc {}, best round {}\n".format(
+        f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
                 round_num, accuracy, avg_loss, best_acc, best_round))
         f.flush()
+        del clients_list[:]
+        torch.cuda.empty_cache()
+        # for i in range(len(clients_list)):
+        #     del clients_list[i]
