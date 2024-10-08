@@ -374,14 +374,14 @@ class Client(threading.Thread):
         # Start all nodes under this client
         for node in self.nodes:
             node.start()
+        # Wait for all nodes to complete
+        for node in self.nodes:
+            node.join()
         # Collect gradients from nodes
         collected_gradients = []
         for _ in self.nodes:
             gradients = self.aggregator_queue.get()
             collected_gradients.append(gradients)
-        # Wait for all nodes to complete
-        for node in self.nodes:
-            node.join()
         print(f"Client {self.client_id} collected all gradients.")
         # Aggregate gradients and update the global model
         self.aggregate_and_update(collected_gradients)

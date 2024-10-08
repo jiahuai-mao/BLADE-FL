@@ -27,14 +27,14 @@ num_clients = 4
 num_nodes_list = [2, 2, 2, 2]
 # num_nodes_list = [1]
 
-transform = transforms.Compose(
-    [
-        transforms.Resize((32, 32)),
-        transforms.ToTensor(),
-        # transforms.Normalize((0.5,), (0.5,))
-        transforms.Normalize((0.1307,), (0.3081,))
-    ]
-)
+
+transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.Resize((32, 32)),
+    transforms.Grayscale(num_output_channels=1),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,)),
+])
 
 train_dataset = torchvision.datasets.FashionMNIST(
     root="./data", train=True, download=True, transform=transform
@@ -43,13 +43,15 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 # Run the simulation for 10 rounds
 num_rounds = 30000
-batch_size = 512
+batch_size = 16
+accumulation_steps = 64
 total_samples = len(train_dataset)
 fraction = 0.26  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
 client_indices = []
+random.shuffle(total_indices)
 for i in range(num_clients):
     subset_indices = total_indices[i*num_samples:(i+1)*num_samples]
     client_indices.append(subset_indices)
@@ -59,11 +61,11 @@ for i in range(num_clients):
 #     client_indices.append(subset_indices)
 
 random.shuffle(total_indices)
-# test_dataset_full = torchvision.datasets.FashionMNIST(
-#     root="./data", train=False, download=True, transform=transform
-# )
-test_dataset_full = Subset(
-    train_dataset, total_indices[:int(total_samples*fraction)])
+test_dataset_full = torchvision.datasets.FashionMNIST(
+    root="./data", train=False, download=True, transform=transform
+)
+# test_dataset_full = Subset(
+#     train_dataset, total_indices[:int(total_samples*fraction)])
 
 
 def customize_topology():
@@ -80,7 +82,7 @@ def create_iid_splits(dataset, indices, num_nodes):
     node_indices = list()
     for _ in range(num_nodes):
         random.shuffle(indices)
-        subset_indices = indices[:batch_size*2]
+        subset_indices = indices[:batch_size*accumulation_steps+batch_size]
         node_indices.append(subset_indices)
     return node_indices
 
@@ -126,36 +128,6 @@ def print_class_distribution(dataset, indices, title="Dataset"):
         print_str = print_str + \
             f"  Class {label}: Count {count}, Ratio {ratio:.4f}\n"
     print(print_str)
-
-
-class ComplexCNN(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.Tanh(),
-            # nn.MaxPool2d(kernel_size=2),
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Linear(128 * 8 * 8, 512),
-            nn.Tanh(),
-            nn.Linear(512, num_classes),
-        )
-
-    def forward(self, x):
-        x = self.features(x)
-        # print("111 ",x.shape)
-        x = torch.flatten(x, 1)
-        # print("222 ",x.shape)
-        x = self.classifier(x)
-        return x
 
 
 class VGG16(nn.Module):
@@ -240,74 +212,20 @@ class Node(threading.Thread):
 
     def run(self):
         print(f"{self.node_id} starting local training.")
-        # Perform forward and backward passes to compute gradients
-        # self.local_model = self.local_model.cuda()
         self.local_model.train()
-        # self.local_model.zero_grad()
-        gradient_list = []
-        # iter = 0
-        # Hyperparameters for Adam optimizer
-        lr = 0.001       # Learning rate
-        beta1 = 0.9     # Exponential decay rate for the first moment estimates
-        beta2 = 0.999   # Exponential decay rate for the second moment estimates
-        epsilon = 1e-8  # Small value to prevent division by zero
-
-        # Initialize moment vectors and time step
-        m = []
-        v = []
         t = 0  # Time step
-        for name, param in enumerate(self.local_model.parameters()):
-            # m[name] = torch.zeros_like(param)
-            # v[name] = torch.zeros_like(param)
-            m.append(0)
-            v.append(0)
-            gradient_list.append(0)
         for data, target in self.data_loader:
             data = data.cuda()
             target = target.cuda()
             output = self.local_model(data)
             loss = self.criterion(output, target)
-
-            # self.local_model.zero_grad()
+            loss = loss/accumulation_steps
             loss.backward()
+
+            if t == accumulation_steps:
+                # print(f"{self.node_id}, ==================, {t}")
+                break
             t += 1
-            tmp = []
-            # for name, param in enumerate(self.local_model.parameters()):
-            # if param.grad is not None:
-            #     grad = param.grad.clone().detach().cpu()
-
-            #     # Update first moment estimate
-            #     m[name] = beta1 * m[name] + (1 - beta1) * grad
-
-            #     # Update second moment estimate
-            #     v[name] = beta2 * v[name] + (1 - beta2) * grad * grad
-
-            #     # Compute bias-corrected first moment estimate
-            #     m_hat = m[name] / (1 - beta1 ** t)
-
-            #     # Compute bias-corrected second moment estimate
-            #     v_hat = v[name] / (1 - beta2 ** t)
-
-            #     # Update parameters
-            #     tmp.append(
-            #         m_hat / (torch.sqrt(v_hat) + epsilon))
-
-            # gradient_list.append(tmp)
-            # iter += 1
-            # if len(gradient_list) == 0:
-            #     gradient_list = [
-            #         grad for grad in tmp
-            #     ]
-            # else:
-            #     gradient_list = [
-            #         grad1 + grad2
-            #         for grad1, grad2 in zip(gradient_list, tmp)
-            #     ]
-            break
-            # break  # For demonstration, we only process one batch
-        # Extract gradients
-        # self.gradients = [grad / t for grad in gradient_list]
-        # self.gradients = [grad.cuda() for grad in self.gradients]
         self.gradients = [
             param.grad.clone().detach().cpu() for param in self.local_model.cpu().parameters()
         ]
@@ -316,7 +234,7 @@ class Node(threading.Thread):
         # Send gradients to aggregator
         self.aggregator_queue.put(self.gradients)
         print(f"{self.node_id} sent gradients to aggregator.")
-        del (self.local_model)
+        # del (self.local_model)
 # I have to check the grads in each batch is same or not. In other words,
 # the grads that were put in aggregator_queue are the final batch-generated or with full iteration.
 
@@ -351,9 +269,12 @@ class Client(threading.Thread):
         self.joint_clients = joint_clients
         # self.optimizer = torch.optim.Adam(
         #     self.global_model.parameters(), lr=0.001)
+        # self.optimizer = torch.optim.SGD(
+        #     self.global_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
+        # )
+
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
-        )
+            self.global_model.parameters(), lr=0.01, momentum=0.9)
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
         # Initialize nodes
@@ -374,14 +295,14 @@ class Client(threading.Thread):
         # Start all nodes under this client
         for node in self.nodes:
             node.start()
+        # Wait for all nodes to complete
+        for node in self.nodes:
+            node.join()
         # Collect gradients from nodes
         collected_gradients = []
         for _ in self.nodes:
             gradients = self.aggregator_queue.get()
             collected_gradients.append(gradients)
-        # Wait for all nodes to complete
-        for node in self.nodes:
-            node.join()
         print(f"Client {self.client_id} collected all gradients.")
         # Aggregate gradients and update the global model
         self.aggregate_and_update(collected_gradients)
@@ -400,18 +321,18 @@ class Client(threading.Thread):
         Aggregates gradients from all nodes and updates the global model.
         """
         # Initialize aggregated gradients
-        # aggregated_gradients = [
-        #     torch.zeros_like(param) for param in self.global_model.parameters()
-        # ]
-        # num_nodes = len(collected_gradients)
+        aggregated_gradients = [
+            torch.zeros_like(param) for param in self.global_model.parameters()
+        ]
+        num_nodes = len(collected_gradients)
         # Sum gradients from all nodes
-        # for gradients in collected_gradients:
-        #     for idx, grad in enumerate(gradients):
-        #         aggregated_gradients[idx] += grad
+        for gradients in collected_gradients:
+            for idx, grad in enumerate(gradients):
+                aggregated_gradients[idx] += grad
         # Average the gradients
-        # self.aggregated_gradients = [
-        #     grad / num_nodes for grad in aggregated_gradients]
-        self.aggregated_gradients = collected_gradients
+        self.aggregated_gradients = [
+            grad / num_nodes for grad in aggregated_gradients]
+        # self.aggregated_gradients = collected_gradients
         # Update global model parameters
         # self.global_model.train()
         # # with torch.no_grad():
@@ -439,7 +360,7 @@ class Client(threading.Thread):
                 #     copy.deepcopy(self.global_model))
                 # parameters_lock[client_id].release()
                 target_client.received_models_q.put(
-                    copy.deepcopy(self.global_model.state_dict()))
+                    copy.deepcopy(self.global_model))
                 print(
                     f"Client {self.client_id} sent model parameters to Client {client_id}."
                 )
@@ -454,7 +375,8 @@ class Client(threading.Thread):
                     # tmp_received_models.append(self.global_model)
                     # state_dicts = [model.state_dict()
                     #                for model in tmp_received_models]
-                    state_dicts = tmp_received_models
+                    state_dicts = [model.state_dict()
+                                   for model in tmp_received_models]
                     # Get keys from the state_dict
                     param_keys = state_dicts[0].keys()
                     # Initialize new state_dict for averaged parameters
@@ -506,15 +428,14 @@ class Client(threading.Thread):
         # num_models = len(self.received_models)
         if self.received_models.qsize() == len(self.joint_clients):
             self.global_model.train()
-            for gradients in self.aggregated_gradients:
-                for param, grad in zip(
-                    self.global_model.parameters(), gradients
-                ):
-                    # param -= 0.001 * grad  # Update rule with learning rate 0.01
-                    # if param.grad is not None:
-                    #     param.data -= grad
-                    param.grad = grad
-                self.optimizer.step()
+            for param, grad in zip(
+                self.global_model.parameters(), self.aggregated_gradients
+            ):
+                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                # if param.grad is not None:
+                #     param.data -= grad
+                param.grad = grad
+            self.optimizer.step()
             # self.received_models = Queue()
             # print(f"client {self.client_id}, averge model 1")
         else:
@@ -527,11 +448,11 @@ class Client(threading.Thread):
             # if num_models == 0:
             #     return  # No models received
             # Include own model in averaging
-            self.received_models.put(self.global_model.state_dict())
+            self.received_models.put(self.global_model)
             # Average parameters using state_dict
             # Collect state_dicts from all models
             state_dicts = [
-                self.received_models.get()
+                self.received_models.get().state_dict()
                 for i in range(self.received_models.qsize())
             ]
             # Get keys from the state_dict
@@ -550,15 +471,14 @@ class Client(threading.Thread):
             # Clear received models for the next round
             # self.received_models = Queue()
             self.global_model.train()
-            for gradients in self.aggregated_gradients:
-                for param, grad in zip(
-                    self.global_model.parameters(), gradients
-                ):
-                    # if param.grad is not None:
-                    #     param.data -= grad  # Modify the data directly
-                    # param -= grad  # Update rule with learning rate 0.01
-                    param.grad = grad
-                self.optimizer.step()
+            for param, grad in zip(
+                self.global_model.parameters(), self.aggregated_gradients
+            ):
+                # if param.grad is not None:
+                #     param.data -= grad  # Modify the data directly
+                # param -= grad  # Update rule with learning rate 0.01
+                param.grad = grad
+            self.optimizer.step()
         print(f"client {self.client_id}, averge model complete.")
 
 
@@ -603,6 +523,8 @@ if __name__ == "__main__":
     accuracy_list = []
     loss_list = []
 
+    # optimizer_list = [torch.optim.SGD(
+    #     model.parameters(), lr=0.01, momentum=0.9) for model in clients_global_models]
     for round_num in range(num_rounds):
         print(f"\n=== Round {round_num + 1} ===")
         # Create a list to hold clients for this round
