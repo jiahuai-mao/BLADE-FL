@@ -11,6 +11,7 @@ import copy
 import time
 from queue import Queue
 import os
+from demo.demoloader.vgg_bn import vgg19_bn, vgg11_bn
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 os.environ['TORCH_USE_CUDA_DSA'] = "1"
@@ -24,16 +25,25 @@ torch.cuda.manual_seed(seed)
 # num_clients = 1
 num_clients = 4
 # num_nodes_list = [6, 6, 6, 6]
-# num_nodes_list = [2, 2, 2, 2]
-num_nodes_list = [1,1,1,1]
+num_nodes_list = [2, 2, 2, 2]
+# num_nodes_list = [1, 1, 1, 1]
+# num_nodes_list = [1]
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
+
+# transform = transforms.Compose([
+#     transforms.RandomHorizontalFlip(),
+#     transforms.Resize((32, 32)),
+#     # transforms.Grayscale(num_output_channels=1),
+#     transforms.ToTensor(),
+#     transforms.Normalize((0.5,), (0.5,)),
+# ])
 
 transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
+    # transforms.Resize((64, 64)),
     transforms.Resize((32, 32)),
-    transforms.Grayscale(num_output_channels=1),
     transforms.ToTensor(),
-    transforms.Normalize((0.5,), (0.5,)),
+    # transforms.Normalize((0.1307,), (0.3081,))
 ])
 
 train_dataset = torchvision.datasets.FashionMNIST(
@@ -43,7 +53,7 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 # Run the simulation for 10 rounds
 num_rounds = 30000
-batch_size = 1024
+batch_size = 16
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.26  # Change to 0.3 for 30%
@@ -61,20 +71,24 @@ for i in range(num_clients):
 #     client_indices.append(subset_indices)
 
 random.shuffle(total_indices)
-test_dataset_full = torchvision.datasets.FashionMNIST(
-    root="./data", train=False, download=True, transform=transform
-)
+# test_dataset_full = torchvision.datasets.FashionMNIST(
+#     root="./data", train=False, download=True, transform=transform
+# )
 # test_dataset_full = Subset(
 #     train_dataset, total_indices[:int(total_samples*fraction)])
+
+test_dataset_full = Subset(
+    train_dataset, total_indices[:int(total_samples*0.25)])
 
 
 def customize_topology():
     topology = list()
     for i in range(num_clients):
-        topology.append(
-            [(i - 1 + num_clients) % num_clients,
-             (i + 1 + num_clients) % num_clients]
-        )
+        # topology.append(
+        #     [(i - 1 + num_clients) % num_clients,
+        #      (i + 1 + num_clients) % num_clients]
+        # )
+        topology.append([])
     return topology
 
 
@@ -128,6 +142,36 @@ def print_class_distribution(dataset, indices, title="Dataset"):
         print_str = print_str + \
             f"  Class {label}: Count {count}, Ratio {ratio:.4f}\n"
     print(print_str)
+
+
+class ComplexCNN(nn.Module):
+    def __init__(self, input_channel=1, num_classes=10):
+        super(ComplexCNN, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2),
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(128 * 8 * 8, 512),
+            nn.Tanh(),
+            nn.Linear(512, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        # print("111 ",x.shape)
+        x = torch.flatten(x, 1)
+        # print("222 ",x.shape)
+        x = self.classifier(x)
+        return x
 
 
 class VGG16(nn.Module):
@@ -204,7 +248,7 @@ class Node(threading.Thread):
         self.data_loader = DataLoader(
             Subset(dataset, data_indices), batch_size=batch_size, shuffle=True
         )
-        self.local_model = copy.deepcopy(global_model).cuda()
+        self.local_model = copy.deepcopy(global_model).to(device)
         self.criterion = nn.CrossEntropyLoss()
         self.gradients = None  # Placeholder for storing gradients
         # Queue to send gradients to aggregator
@@ -212,16 +256,22 @@ class Node(threading.Thread):
 
     def run(self):
         print(f"{self.node_id} starting local training.")
-        self.local_model.train()
         t = 0  # Time step
+        print("client param, before backward")
+        # for param in self.local_model.parameters():
+        #     print(param[0])
+        #     break
+
+        # self.local_model = self.local_model.to(device)
+        self.local_model.train()
         for data, target in self.data_loader:
-            data = data.cuda()
-            target = target.cuda()
+            data = data.to(device)
+            target = target.to(device)
             output = self.local_model(data)
             loss = self.criterion(output, target)
-            # loss = loss/accumulation_steps
+            loss = loss/accumulation_steps
             loss.backward()
-            
+
             # print(f"{self.node_id}, ==================, {t}")
             if t+1 == accumulation_steps:
                 # print(f"{self.node_id}, ==================, {t}")
@@ -230,6 +280,11 @@ class Node(threading.Thread):
         self.gradients = [
             param.grad.clone().detach().cpu() for param in self.local_model.cpu().parameters()
         ]
+
+        # print("client param, after backward")
+        # for param in self.local_model.parameters():
+        #     print(param[0], "\n", param.grad[0])
+        #     break
         # self.gradients = [1.0*grad/len(gradient_list)
         #                   for grad in gradient_list]
         # Send gradients to aggregator
@@ -275,7 +330,7 @@ class Client(threading.Thread):
         # )
 
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=0.001, momentum=0.9)
+            self.global_model.parameters(), lr=1.1, momentum=0.9)
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
         # Initialize nodes
@@ -335,12 +390,34 @@ class Client(threading.Thread):
             grad / num_nodes for grad in aggregated_gradients]
         # self.aggregated_gradients = collected_gradients
         # Update global model parameters
+        # print("aggregated_gradients = ")
+        # print(aggregated_gradients[0][0])
+        # print("cluster param, before update")
+        # for param in self.global_model.parameters():
+        #     print(param[0])
+        #     break
+        # self.global_model = self.global_model.to(device)
         self.global_model.train()
         # with torch.no_grad():
+        cunt = 0
         for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
-            # param -= 0.001 * grad  # Update rule with learning rate 0.01
+            # grad = grad.to(device)
+            # if cunt == 0:
+            #     print("optimizer 1\n",
+            #           param[0], param.shape, "\n", grad[0], grad.shape)
+            # param = param - 0.1 * grad  # Update rule with learning rate 0.01
             param.grad = grad
+            # if cunt == 0:
+            #     print("optimizer 2\n",
+            #           param[0], param.shape, "\n", grad[0], grad.shape)
+            #     cunt += 1
         self.optimizer.step()
+
+        # print("cluster param, after update")
+        # for param in self.global_model.parameters():
+        #     print(param[0])
+        #     break
+        # self.global_model = self.global_model.to(device)
 
     def communicate(self):
         """
@@ -367,7 +444,6 @@ class Client(threading.Thread):
                 self.joint_clients
             ):
                 break
-            
 
         for _ in range(self.received_models_q.qsize()):
             self.received_models.put(self.received_models_q.get())
@@ -392,7 +468,7 @@ class Client(threading.Thread):
         averaged_state_dict = {}
         for key in param_keys:
             # Sum parameters from all models
-            params = [state_dict[key] for state_dict in state_dicts]
+            params = [state_dict[key].float() for state_dict in state_dicts]
             # Stack parameters and compute mean
             stacked_params = torch.stack(params, dim=0)
             averaged_param = torch.mean(stacked_params, dim=0)
@@ -413,6 +489,7 @@ def test_global_model(global_model, test_loader):
     criterion = nn.CrossEntropyLoss()
     with torch.no_grad():
         for data, target in test_loader:
+            # data, target = data.to(device), target.to(device)
             output = global_model(data)
             loss = criterion(output, target)
             total_loss += loss.item() * data.size(0)
@@ -433,6 +510,8 @@ if __name__ == "__main__":
     # Initialize clients' global models (None at the start)
     clients_global_models = [VGG16() for _ in range(num_clients)]
     # clients_global_models = [ComplexCNN() for _ in range(num_clients)]
+    # clients_global_models = [
+    #     vgg11_bn(input_channel=1, num_classes=10) for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     # Prepare test loader

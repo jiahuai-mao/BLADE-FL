@@ -718,7 +718,7 @@ import time
 from queue import Queue
 import os
 from tqdm import tqdm
-from demo.demo.demoloader.vgg_bn import vgg19_bn
+from demo.demoloader.vgg_bn import vgg19_bn, vgg11_bn
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 os.environ['TORCH_USE_CUDA_DSA'] = "1"
@@ -831,8 +831,8 @@ def test_global_model(global_model, test_loader):
 
 # Run the simulation for 10 rounds
 num_rounds = 1000
-batch_size = 8
-accumulation_steps = 64
+batch_size = 1024
+accumulation_steps = 1
 
 if __name__ == "__main__":
     model = VGG16()
@@ -872,7 +872,10 @@ if __name__ == "__main__":
 
             loss = loss/accumulation_steps
             loss.backward()
-
+            if (epoch+1) % 10 == 0 or epoch == 0:
+                for param in model.parameters():
+                    print(param[0], "\n", param.grad[0])
+                    break
             if ((i+1) % accumulation_steps) or (i+1 == data_loader.__len__) == 0:
                 optimizer.step()
                 optimizer.zero_grad()
