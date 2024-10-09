@@ -24,8 +24,8 @@ torch.cuda.manual_seed(seed)
 # num_clients = 1
 num_clients = 4
 # num_nodes_list = [6, 6, 6, 6]
-num_nodes_list = [2, 2, 2, 2]
-# num_nodes_list = [1]
+# num_nodes_list = [2, 2, 2, 2]
+num_nodes_list = [1,1,1,1]
 
 
 transform = transforms.Compose([
@@ -43,8 +43,8 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 # Run the simulation for 10 rounds
 num_rounds = 30000
-batch_size = 16
-accumulation_steps = 64
+batch_size = 1024
+accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.26  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
@@ -219,10 +219,11 @@ class Node(threading.Thread):
             target = target.cuda()
             output = self.local_model(data)
             loss = self.criterion(output, target)
-            loss = loss/accumulation_steps
+            # loss = loss/accumulation_steps
             loss.backward()
-
-            if t == accumulation_steps:
+            
+            # print(f"{self.node_id}, ==================, {t}")
+            if t+1 == accumulation_steps:
                 # print(f"{self.node_id}, ==================, {t}")
                 break
             t += 1
@@ -270,11 +271,11 @@ class Client(threading.Thread):
         # self.optimizer = torch.optim.Adam(
         #     self.global_model.parameters(), lr=0.001)
         # self.optimizer = torch.optim.SGD(
-        #     self.global_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
+        #     self.global_model.parameters(), lr=0.001, momentum=0.9, weight_decay=5e-4
         # )
 
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=0.01, momentum=0.9)
+            self.global_model.parameters(), lr=0.001, momentum=0.9)
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
         # Initialize nodes
@@ -334,12 +335,12 @@ class Client(threading.Thread):
             grad / num_nodes for grad in aggregated_gradients]
         # self.aggregated_gradients = collected_gradients
         # Update global model parameters
-        # self.global_model.train()
-        # # with torch.no_grad():
-        # for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
-        #     # param -= 0.001 * grad  # Update rule with learning rate 0.01
-        #     param.grad = grad
-        # self.optimizer.step()
+        self.global_model.train()
+        # with torch.no_grad():
+        for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
+            # param -= 0.001 * grad  # Update rule with learning rate 0.01
+            param.grad = grad
+        self.optimizer.step()
 
     def communicate(self):
         """
@@ -351,53 +352,10 @@ class Client(threading.Thread):
             #       self.client_id, client_id, self.joint_clients)
             if (client_id in self.joint_clients) and (client_id != self.client_id):
                 target_client = self.clients_list[client_id]
-                # Send (copy) the global model parameters to the target client
-                # print(
-                #     f"client {self.client_id} send model para to target client {target_client.client_id}")
-                # parameters_lock[client_id].acquire()
-                # print("++++++++")
-                # target_client.received_models.append(
-                #     copy.deepcopy(self.global_model))
-                # parameters_lock[client_id].release()
                 target_client.received_models_q.put(
                     copy.deepcopy(self.global_model))
                 print(
                     f"Client {self.client_id} sent model parameters to Client {client_id}."
-                )
-
-                # update the parameter if receive others'
-                if self.received_models_q.qsize() != 0:
-                    tmp_received_models = []
-                    for _ in range(self.received_models_q.qsize()):
-                        tmp_model = self.received_models_q.get()
-                        tmp_received_models.append(tmp_model)
-                        self.received_models.put(tmp_model)
-                    # tmp_received_models.append(self.global_model)
-                    # state_dicts = [model.state_dict()
-                    #                for model in tmp_received_models]
-                    state_dicts = [model.state_dict()
-                                   for model in tmp_received_models]
-                    # Get keys from the state_dict
-                    param_keys = state_dicts[0].keys()
-                    # Initialize new state_dict for averaged parameters
-                    averaged_state_dict = {}
-                    for key in param_keys:
-                        # Sum parameters from all models
-                        params = [state_dict[key]
-                                  for state_dict in state_dicts]
-                        # Stack parameters and compute mean
-                        stacked_params = torch.stack(params, dim=0)
-                        averaged_param = torch.mean(stacked_params, dim=0)
-                        averaged_state_dict[key] = averaged_param
-                    # Load averaged parameters into the global model
-                    self.global_model.load_state_dict(averaged_state_dict)
-
-                print(
-                    "target client ",
-                    target_client.client_id,
-                    target_client.received_models.qsize(),
-                    target_client.received_models_q.qsize(),
-                    len(target_client.joint_clients),
                 )
 
     def average_models(self):
@@ -405,80 +363,42 @@ class Client(threading.Thread):
         Averages the received models to update the local global model.
         """
         while True:
-            # print(
-            #     "client ",
-            #     self.client_id,
-            #     self.received_models.qsize(),
-            #     self.received_models_q.qsize(),
-            #     len(self.joint_clients),
-            # )
-            # time.sleep(0.1)
-            # if self.received_models_q.qsize() == len(self.joint_clients):
-            #     break
-            if (self.received_models.qsize() + self.received_models_q.qsize()) == len(
+            if self.received_models_q.qsize() == len(
                 self.joint_clients
             ):
                 break
-            # parameters_lock[self.client_id].acquire()
-            # print("client, received, joint", self.client_id, len(
-            #     self.received_models), len(self.joint_clients))
-            # if len(self.received_models) == len(self.joint_clients):
-            #     break
-            # parameters_lock[self.client_id].release()
-        # num_models = len(self.received_models)
-        if self.received_models.qsize() == len(self.joint_clients):
-            self.global_model.train()
-            for param, grad in zip(
-                self.global_model.parameters(), self.aggregated_gradients
-            ):
-                # param -= 0.001 * grad  # Update rule with learning rate 0.01
-                # if param.grad is not None:
-                #     param.data -= grad
-                param.grad = grad
-            self.optimizer.step()
-            # self.received_models = Queue()
-            # print(f"client {self.client_id}, averge model 1")
-        else:
-            for _ in range(self.received_models_q.qsize()):
-                self.received_models.put(self.received_models_q.get())
-            print(
-                f"Client {self.client_id} received {self.received_models.qsize()} model parameters."
-            )
-            # # if not self.received_models:
-            # if num_models == 0:
-            #     return  # No models received
-            # Include own model in averaging
-            self.received_models.put(self.global_model)
-            # Average parameters using state_dict
-            # Collect state_dicts from all models
-            state_dicts = [
-                self.received_models.get().state_dict()
-                for i in range(self.received_models.qsize())
-            ]
-            # Get keys from the state_dict
-            param_keys = state_dicts[0].keys()
-            # Initialize new state_dict for averaged parameters
-            averaged_state_dict = {}
-            for key in param_keys:
-                # Sum parameters from all models
-                params = [state_dict[key] for state_dict in state_dicts]
-                # Stack parameters and compute mean
-                stacked_params = torch.stack(params, dim=0)
-                averaged_param = torch.mean(stacked_params, dim=0)
-                averaged_state_dict[key] = averaged_param
-            # Load averaged parameters into the global model
-            self.global_model.load_state_dict(averaged_state_dict)
-            # Clear received models for the next round
-            # self.received_models = Queue()
-            self.global_model.train()
-            for param, grad in zip(
-                self.global_model.parameters(), self.aggregated_gradients
-            ):
-                # if param.grad is not None:
-                #     param.data -= grad  # Modify the data directly
-                # param -= grad  # Update rule with learning rate 0.01
-                param.grad = grad
-            self.optimizer.step()
+            
+
+        for _ in range(self.received_models_q.qsize()):
+            self.received_models.put(self.received_models_q.get())
+        print(
+            f"Client {self.client_id} received {self.received_models.qsize()} model parameters."
+        )
+        # # if not self.received_models:
+        # if num_models == 0:
+        #     return  # No models received
+        # Include own model in averaging
+        self.received_models.put(self.global_model)
+        # Average parameters using state_dict
+        # Collect state_dicts from all models
+        num_models = self.received_models.qsize()
+        state_dicts = [
+            self.received_models.get().state_dict()
+            for i in range(num_models)
+        ]
+        # Get keys from the state_dict
+        param_keys = state_dicts[0].keys()
+        # Initialize new state_dict for averaged parameters
+        averaged_state_dict = {}
+        for key in param_keys:
+            # Sum parameters from all models
+            params = [state_dict[key] for state_dict in state_dicts]
+            # Stack parameters and compute mean
+            stacked_params = torch.stack(params, dim=0)
+            averaged_param = torch.mean(stacked_params, dim=0)
+            averaged_state_dict[key] = averaged_param
+        # Load averaged parameters into the global model
+        self.global_model.load_state_dict(averaged_state_dict)
         print(f"client {self.client_id}, averge model complete.")
 
 
@@ -579,7 +499,7 @@ if __name__ == "__main__":
         f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
                 round_num, accuracy, avg_loss, best_acc, best_round))
         f.flush()
-        del clients_list[:]
-        torch.cuda.empty_cache()
+        # del clients_list[:]
+        # torch.cuda.empty_cache()
         # for i in range(len(clients_list)):
         #     del clients_list[i]
