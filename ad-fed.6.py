@@ -25,8 +25,8 @@ torch.cuda.manual_seed(seed)
 # num_clients = 1
 num_clients = 4
 # num_nodes_list = [6, 6, 6, 6]
-num_nodes_list = [2, 2, 2, 2]
-# num_nodes_list = [1, 1, 1, 1]
+# num_nodes_list = [2, 2, 2, 2]
+num_nodes_list = [1, 1, 1, 1]
 # num_nodes_list = [1]
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
@@ -53,18 +53,20 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 # Run the simulation for 10 rounds
 num_rounds = 30000
-batch_size = 16
-accumulation_steps = 1
+batch_size = 256
+accumulation_steps = 8
 total_samples = len(train_dataset)
-fraction = 0.26  # Change to 0.3 for 30%
+fraction = 1.0  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
 client_indices = []
-random.shuffle(total_indices)
 for i in range(num_clients):
-    subset_indices = total_indices[i*num_samples:(i+1)*num_samples]
+    # subset_indices = total_indices[i*num_samples:(i+1)*num_samples]
+    random.shuffle(total_indices)
+    subset_indices = total_indices[:int(total_samples*fraction)]
     client_indices.append(subset_indices)
+    print(len(subset_indices))
 
 # for i in range(num_clients):
 #     subset_indices = total_indices[i*num_samples:(i+1)*num_samples]
@@ -84,11 +86,12 @@ test_dataset_full = Subset(
 def customize_topology():
     topology = list()
     for i in range(num_clients):
+        topology.append([j for j in range(num_clients)])
         # topology.append(
         #     [(i - 1 + num_clients) % num_clients,
         #      (i + 1 + num_clients) % num_clients]
         # )
-        topology.append([])
+        # topology.append([])
     return topology
 
 
@@ -257,7 +260,7 @@ class Node(threading.Thread):
     def run(self):
         print(f"{self.node_id} starting local training.")
         t = 0  # Time step
-        print("client param, before backward")
+        # print("client param, before backward")
         # for param in self.local_model.parameters():
         #     print(param[0])
         #     break
@@ -308,6 +311,8 @@ class Client(threading.Thread):
         num_clients,
         clients_list,
         joint_clients,
+        learn_rate,
+        # optimizer,
         global_model=None,
     ):
         threading.Thread.__init__(self)
@@ -330,8 +335,8 @@ class Client(threading.Thread):
         # )
 
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=1.1, momentum=0.9)
-
+            self.global_model.parameters(), lr=learn_rate, momentum=0.9)
+        # self.optimizer = optimizer
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
         # Initialize nodes
         for i, node_indices in enumerate(node_indices_list):
@@ -384,7 +389,7 @@ class Client(threading.Thread):
         # Sum gradients from all nodes
         for gradients in collected_gradients:
             for idx, grad in enumerate(gradients):
-                aggregated_gradients[idx] += grad
+                aggregated_gradients[idx] += grad.to(device)
         # Average the gradients
         self.aggregated_gradients = [
             grad / num_nodes for grad in aggregated_gradients]
@@ -400,19 +405,26 @@ class Client(threading.Thread):
         self.global_model.train()
         # with torch.no_grad():
         cunt = 0
-        for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
+        # self.optimizer.zero_grad()
+        for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
             # grad = grad.to(device)
-            # if cunt == 0:
-            #     print("optimizer 1\n",
-            #           param[0], param.shape, "\n", grad[0], grad.shape)
-            # param = param - 0.1 * grad  # Update rule with learning rate 0.01
+            if cunt == 0 and self.client_id == 0:
+                print("optimizer 1\n",
+                      param[0], param.shape, "\n", grad[0], grad.shape)
+            # Update rule with learning rate 0.01
+            # param.data = param.data - learn_rate * grad
+            # param.requires_grad = True
             param.grad = grad
-            # if cunt == 0:
-            #     print("optimizer 2\n",
-            #           param[0], param.shape, "\n", grad[0], grad.shape)
-            #     cunt += 1
+            if cunt == 0 and self.client_id == 0:
+                print("optimizer 2\n",
+                      param[0], param.shape, "\n", grad[0], grad.shape)
+            cunt += 1
         self.optimizer.step()
-
+        for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
+            if self.client_id == 0:
+                print("optimizer 3\n",
+                      param[0], param.shape, "\n", grad[0], grad.shape)
+            break
         # print("cluster param, after update")
         # for param in self.global_model.parameters():
         #     print(param[0])
@@ -475,6 +487,8 @@ class Client(threading.Thread):
             averaged_state_dict[key] = averaged_param
         # Load averaged parameters into the global model
         self.global_model.load_state_dict(averaged_state_dict)
+        self.optimizer = torch.optim.SGD(self.global_model.parameters(
+        ), lr=self.optimizer.param_groups[0]['lr'], momentum=0.9)
         print(f"client {self.client_id}, averge model complete.")
 
 
@@ -503,12 +517,15 @@ def test_global_model(global_model, test_loader):
 
 
 if __name__ == "__main__":
-    import torch.multiprocessing as mp
-    mp.set_start_method('spawn', force=True)
+    # import torch.multiprocessing as mp
+    # mp.set_start_method('spawn', force=True)
     f = open("./results/res_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
-    clients_global_models = [VGG16() for _ in range(num_clients)]
+    learn_rate = 0.01
+    clients_global_models = [VGG16().to(device) for _ in range(num_clients)]
+    # clients_optimizers = [torch.optim.SGD(
+    #     model.parameters(), lr=learn_rate, momentum=0.9) for model in clients_global_models]
     # clients_global_models = [ComplexCNN() for _ in range(num_clients)]
     # clients_global_models = [
     #     vgg11_bn(input_channel=1, num_classes=10) for _ in range(num_clients)]
@@ -518,17 +535,22 @@ if __name__ == "__main__":
     test_loader = DataLoader(
         test_dataset_full, batch_size=batch_size, shuffle=False)
 
-    best_acc, best_round = 0.0, 0
-    accuracy_list = []
-    loss_list = []
+    best_acc, best_round, best_model = 0.0, 0, 0
 
     # optimizer_list = [torch.optim.SGD(
     #     model.parameters(), lr=0.01, momentum=0.9) for model in clients_global_models]
     for round_num in range(num_rounds):
+        accuracy_list = []
+        loss_list = []
         print(f"\n=== Round {round_num + 1} ===")
+        for param in clients_global_models[0].parameters():
+            print("before round \n", param[0])
+            break
         # Create a list to hold clients for this round
         clients_list = []
-        # Create clients and their nodes for this round
+        if (i+1) % 20 == 0:
+            learn_rate = learn_rate*0.9
+            # Create clients and their nodes for this round
         for i, c_indices in enumerate(client_indices):
             # node_indices_list = create_noniid_splits(train_dataset, c_indices, 4)
             node_indices_list = create_iid_splits(
@@ -544,6 +566,8 @@ if __name__ == "__main__":
                 num_clients,
                 clients_list,
                 joint_clients[i],
+                learn_rate,
+                # clients_optimizers[i],
                 global_model=global_model,
             )
             clients_list.append(client)
@@ -565,20 +589,39 @@ if __name__ == "__main__":
         # Store the updated global models for the next round
         # clients_global_models = [client.global_model for client in clients_list]
         # Evaluate the global model (using the first client's model)
-        global_model = clients_global_models[0]
-        accuracy, avg_loss = test_global_model(global_model, test_loader)
+        # for idm in range(len(clients_global_models)):
+        #     global_model = clients_global_models[idm]
+        #     accuracy, avg_loss = test_global_model(global_model, test_loader)
+        #     accuracy_list.append(accuracy)
+        #     loss_list.append(avg_loss)
+        #     if accuracy >= best_acc:
+        #         best_acc = accuracy
+        #         best_round = round_num
+        #         best_model = idm
+        accuracy, avg_loss = test_global_model(
+            clients_global_models[0], test_loader)
         accuracy_list.append(accuracy)
         loss_list.append(avg_loss)
         if accuracy >= best_acc:
             best_acc = accuracy
             best_round = round_num
+            best_model = 0
+        # print(
+        #     f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}, all acc {accuracy_list}, all loss {loss_list}"
+        # )
         print(
             f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
         )
         f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
                 round_num, accuracy, avg_loss, best_acc, best_round))
         f.flush()
+        # print(clients_global_models[0])
         # del clients_list[:]
+        # print(clients_global_models[0])
+        # clients_list.clear()
         # torch.cuda.empty_cache()
         # for i in range(len(clients_list)):
         #     del clients_list[i]
+        # for param in clients_global_models[0].parameters():
+        #     print("after round \n", param[0])
+        #     break

@@ -17,9 +17,9 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
-num_clients = 4
-num_nodes_list = [6, 6, 6, 6]
-# num_nodes_list = [1, 1, 1, 1]
+num_clients = 3
+# num_nodes_list = [6, 6, 6, 6]
+num_nodes_list = [2, 2, 2]
 
 transform = transforms.Compose(
     [
@@ -152,72 +152,64 @@ class ComplexCNN(nn.Module):
         return x
 
 
-class ComplexCNN_(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
+class VGG16(nn.Module):
+    def __init__(self, input_channel=1, output_size=10):
+        super(VGG16, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            # Optional: Add another pooling layer if needed
-            nn.MaxPool2d(kernel_size=2),
-        )
+            nn.Conv2d(input_channel, 4, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(4, 4, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
 
+            nn.Conv2d(4, 8, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(8, 8, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(8, 16, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(16, 16, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(16, 16, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1),
+            nn.Tanh()
+            # nn.MaxPool2d(kernel_size=2, stride=2)
+        )
         self.classifier = nn.Sequential(
-            # Adjust input size if additional pooling is added
-            nn.Linear(128 * 4 * 4, 512),
-            nn.ReLU(),
-            nn.Linear(512, num_classes),
+            nn.Linear(32 * 32 * 32, 1024),
+            nn.Tanh(),
+            nn.Dropout(),
+            nn.Linear(1024, 1024),
+            nn.Tanh(),
+            nn.Dropout(),
+            nn.Linear(1024, output_size)
+            # nn.Softmax(dim=1)
         )
 
     def forward(self, x):
+        # x = x.reshape([-1, 1, 7, 8])
+        # print("x = ", x.shape)
         x = self.features(x)
-        x = torch.flatten(x, 1)
+        x = x.view(x.size(0), -1)
+        # print("x.view = ", x.shape, "linear = ", 32*32*32)
         x = self.classifier(x)
-        return x
-
-
-class ComplexCNN_(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
-        # First convolutional layer
-        self.conv1 = nn.Conv2d(
-            in_channels=input_channel, out_channels=32, kernel_size=3, padding=1)
-        # Second convolutional layer
-        self.conv2 = nn.Conv2d(
-            in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        # Max pooling layer
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        # Dropout layer to prevent overfitting
-        self.dropout = nn.Dropout(p=0.25)
-        # Fully connected layer
-        self.fc1 = nn.Linear(in_features=64 * 7 * 7, out_features=128)
-        # Output layer
-        self.fc2 = nn.Linear(in_features=128, out_features=num_classes)
-
-    def forward(self, x):
-        # Convolutional layer 1 + ReLU activation
-        x = F.relu(self.conv1(x))
-        # Convolutional layer 2 + ReLU activation
-        x = F.relu(self.conv2(x))
-        # Max pooling
-        x = self.pool(x)
-        # Flatten the tensor
-        x = x.view(-1, 64 * 7 * 7)
-        # Fully connected layer + ReLU activation
-        x = F.relu(self.fc1(x))
-        # Dropout
-        x = self.dropout(x)
-        # Output layer
-        x = self.fc2(x)
         return x
 
 
@@ -310,7 +302,7 @@ class Node(threading.Thread):
         # self.gradients = [grad / t for grad in gradient_list]
         # self.gradients = [grad.cuda() for grad in self.gradients]
         self.gradients = [
-            param.grad.clone().detach().cpu() for param in self.local_model.cpu().parameters()
+            param.grad.clone().detach() for param in self.local_model.cpu().parameters()
         ]
         # self.gradients = [1.0*grad/len(gradient_list)
         #                   for grad in gradient_list]
@@ -341,7 +333,7 @@ class Client(threading.Thread):
         self.nodes = []
         self.dataset = dataset
         # Initialize global model if not provided\
-        self.global_model = global_model
+        self.global_model = global_model.cuda()
         self.num_clients = num_clients
         # self.received_models = []  # List to store models received from other clients
         self.received_models = Queue()
@@ -401,16 +393,21 @@ class Client(threading.Thread):
         """
         # Initialize aggregated gradients
         aggregated_gradients = [
-            torch.zeros_like(param) for param in self.global_model.parameters()
+            torch.zeros_like(param).cuda() for param in self.global_model.parameters()
         ]
         num_nodes = len(collected_gradients)
         # Sum gradients from all nodes
         for gradients in collected_gradients:
             for idx, grad in enumerate(gradients):
-                aggregated_gradients[idx] += grad
+                aggregated_gradients[idx] += grad.cuda()
         # Average the gradients
         self.aggregated_gradients = [
             grad / num_nodes for grad in aggregated_gradients]
+        for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
+            if self.client_id == 0:
+                print("optimizer 1\n",
+                      param[0], param.shape, "\n", grad[0], grad.shape)
+            break
         # Update global model parameters
         # self.global_model.train()
         # # with torch.no_grad():
@@ -502,11 +499,7 @@ class Client(threading.Thread):
             #     break
             # parameters_lock[self.client_id].release()
         # num_models = len(self.received_models)
-        for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
-            if self.client_id == 0:
-                print("optimizer 1\n",
-                      param[0], param.shape, "\n", grad[0], grad.shape)
-            break
+
         if self.received_models.qsize() == len(self.joint_clients):
             self.global_model.train()
             for param, grad in zip(
@@ -559,12 +552,13 @@ class Client(threading.Thread):
                 #     param.data -= grad  # Modify the data directly
                 # param -= grad  # Update rule with learning rate 0.01
                 param.grad = grad
-            self.optimizer.step()
-        for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
+        for param in self.global_model.parameters():
             if self.client_id == 0:
+                grad = param.grad
                 print("optimizer 2\n",
                       param[0], param.shape, "\n", grad[0], grad.shape)
             break
+            self.optimizer.step()
         print(f"client {self.client_id}, averge model complete.")
 
 
@@ -579,6 +573,7 @@ def test_global_model(global_model, test_loader):
     criterion = nn.CrossEntropyLoss()
     with torch.no_grad():
         for data, target in test_loader:
+            # data, target = data.cuda(), target.cuda()
             output = global_model(data)
             loss = criterion(output, target)
             total_loss += loss.item() * data.size(0)
@@ -595,7 +590,7 @@ if __name__ == "__main__":
     f = open("./results/res_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
-    clients_global_models = [ComplexCNN() for _ in range(num_clients)]
+    clients_global_models = [VGG16() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     # Prepare test loader
@@ -640,7 +635,7 @@ if __name__ == "__main__":
             client.join()
         # Store the updated global models for the next round
         clients_global_models = [
-            client.global_model for client in clients_list]
+            client.global_model.cpu() for client in clients_list]
         # Optionally, you can evaluate the global model here
         # For example, test accuracy on a validation set
         # Store the updated global models for the next round
@@ -659,3 +654,5 @@ if __name__ == "__main__":
         f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
                 round_num, accuracy, avg_loss, best_acc, best_round))
         f.flush()
+
+        torch.cuda.empty_cache()

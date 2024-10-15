@@ -872,10 +872,10 @@ if __name__ == "__main__":
 
             loss = loss/accumulation_steps
             loss.backward()
-            if (epoch+1) % 10 == 0 or epoch == 0:
-                for param in model.parameters():
-                    print(param[0], "\n", param.grad[0])
-                    break
+            # if (epoch+1) % 10 == 0 or epoch == 0:
+            #     for param in model.parameters():
+            #         print(param[0], "\n", param.grad[0])
+            #         break
             if ((i+1) % accumulation_steps) or (i+1 == data_loader.__len__) == 0:
                 optimizer.step()
                 optimizer.zero_grad()
