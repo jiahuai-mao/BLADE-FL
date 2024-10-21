@@ -23,9 +23,9 @@ torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
 # num_clients = 1
-num_clients = 4
+num_clients = 2
 # num_nodes_list = [6, 6, 6, 6]
-num_nodes_list = [2, 2, 2, 2]
+num_nodes_list = [2, 2]
 # num_nodes_list = [1, 1, 1, 1]
 # num_nodes_list = [1]
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -86,7 +86,7 @@ test_dataset_full = Subset(
 def customize_topology():
     topology = list()
     for i in range(num_clients):
-        topology.append([j for j in range(num_clients)])
+        topology.append([j for j in range(num_clients) if j != i])
         # topology.append(
         #     [(i - 1 + num_clients) % num_clients,
         #      (i + 1 + num_clients) % num_clients]
@@ -503,7 +503,7 @@ def test_global_model(global_model, test_loader):
     criterion = nn.CrossEntropyLoss()
     with torch.no_grad():
         for data, target in test_loader:
-            # data, target = data.to(device), target.to(device)
+            data, target = data.to(device), target.to(device)
             output = global_model(data)
             loss = criterion(output, target)
             total_loss += loss.item() * data.size(0)
