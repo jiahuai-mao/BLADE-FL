@@ -38,6 +38,7 @@ train_dataset = torchvision.datasets.FashionMNIST(
 # Run the simulation for 10 rounds
 num_rounds = 30000
 batch_size = 512
+accumulation_steps = 8
 total_samples = len(train_dataset)
 fraction = 0.26  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
@@ -268,10 +269,17 @@ class Node(threading.Thread):
             target = target.cuda()
             output = self.local_model(data)
             loss = self.criterion(output, target)
-
-            self.local_model.zero_grad()
+            loss = loss/accumulation_steps
             loss.backward()
+
+            # print(f"{self.node_id}, ==================, {t}")
+            if t+1 == accumulation_steps:
+                # print(f"{self.node_id}, ==================, {t}")
+                break
             t += 1
+            # self.local_model.zero_grad()
+            # loss.backward()
+            # t += 1
             tmp = []
             # for name, param in enumerate(self.local_model.parameters()):
             # if param.grad is not None:
@@ -304,7 +312,7 @@ class Node(threading.Thread):
             #         grad1 + grad2
             #         for grad1, grad2 in zip(gradient_list, tmp)
             #     ]
-            break
+            # break
             # break  # For demonstration, we only process one batch
         # Extract gradients
         # self.gradients = [grad / t for grad in gradient_list]

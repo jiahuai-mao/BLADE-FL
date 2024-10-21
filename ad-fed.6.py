@@ -25,8 +25,8 @@ torch.cuda.manual_seed(seed)
 # num_clients = 1
 num_clients = 4
 # num_nodes_list = [6, 6, 6, 6]
-# num_nodes_list = [2, 2, 2, 2]
-num_nodes_list = [1, 1, 1, 1]
+num_nodes_list = [2, 2, 2, 2]
+# num_nodes_list = [1, 1, 1, 1]
 # num_nodes_list = [1]
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
@@ -218,13 +218,13 @@ class VGG16(nn.Module):
             # nn.MaxPool2d(kernel_size=2, stride=2)
         )
         self.classifier = nn.Sequential(
-            nn.Linear(32 * 32 * 32, 1024),
+            nn.Linear(32 * 32 * 32, 256),
             nn.Tanh(),
-            nn.Dropout(),
-            nn.Linear(1024, 1024),
+            # nn.Dropout(),
+            nn.Linear(256, 256),
             nn.Tanh(),
-            nn.Dropout(),
-            nn.Linear(1024, output_size)
+            # nn.Dropout(),
+            nn.Linear(256, output_size)
             # nn.Softmax(dim=1)
         )
 
