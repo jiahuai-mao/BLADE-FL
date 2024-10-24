@@ -40,7 +40,7 @@ num_rounds = 30000
 batch_size = 512
 accumulation_steps = 8
 total_samples = len(train_dataset)
-fraction = 0.26  # Change to 0.3 for 30%
+fraction = 0.24  # Change to 0.3 for 30%
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 

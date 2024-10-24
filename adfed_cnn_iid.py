@@ -38,16 +38,19 @@ num_rounds = 10000
 batch_size = 512
 accumulation_steps = 8
 total_samples = len(train_dataset)
-fraction = 0.26
+fraction = 0.24
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
 client_indices = []
-for _ in range(num_clients):
-    subset_indices = total_indices[:total_samples]
+for i in range(num_clients):
+    subset_indices = []
+    for _ in range(num_nodes_list[i]):
+        random.shuffle(total_indices)
+        subset_indices.extend(total_indices[:num_samples])
     client_indices.append(subset_indices)
 
-random.shuffle(total_indices)
+# random.shuffle(total_indices)
 test_dataset_full = torchvision.datasets.FashionMNIST(
     root="./data", train=False, download=True, transform=transform
 )
@@ -64,13 +67,48 @@ def customize_topology():
     return topology
 
 
-def create_iid_splits(dataset, indices, num_nodes):
+def create_iid_splits(dataset, indices, num_nodes_list):
     node_indices = list()
-    for _ in range(num_nodes):
-        random.shuffle(indices)
-        subset_indices = indices[:num_samples]
-        node_indices.append(subset_indices)
+    # flag1 = False
+    for i, num_nodes in enumerate(num_nodes_list):
+        # random.shuffle(indices)
+        cur_indices = indices[i]
+        node_indice = [list() for _ in range(num_nodes)]
+        for j in range(num_nodes):
+            random.shuffle(cur_indices)
+            subset_indices = cur_indices[:num_samples]
+            node_indice[j].extend(subset_indices)
+        node_indices.append(node_indice)
+    # print(node_indices)
     return node_indices
+
+
+def print_class_distribution(dataset, indices, title="Dataset"):
+    """
+    Prints the class distribution (counts and ratios) for a given set of indices.
+
+    Args:
+        dataset: The full dataset (e.g., train_dataset).
+        indices: A list of indices representing the subdataset.
+        title: A string title to identify the subdataset.
+    """
+    from collections import Counter
+
+    # Extract labels for the given indices
+    # import pdb;pdb.set_trace()
+    labels = [int(dataset.targets[idx]) for idx in indices]
+
+    # Count occurrences of each class label
+    label_counts = Counter(labels)
+
+    total_count = sum(label_counts.values())
+    print_str = f"\nClass distribution in {title}:\nTotal_count {total_count}\n"
+    for label in sorted(label_counts.keys()):
+        count = label_counts[label]
+        ratio = count / total_count
+        print_str = print_str + \
+            f"  Class {label}: Count {count}, Ratio {ratio:.4f}\n"
+    print(print_str)
 
 
 class ComplexCNN(nn.Module):
@@ -183,7 +221,7 @@ class Client(threading.Thread):
         # Initialize nodes
         for i, node_indices in enumerate(node_indices_list):
             # print_class_distribution(
-            #     dataset, node_indices, title=f"Client {client_id} Node {i}")
+            # dataset, node_indices, title=f"Client {client_id} Node {i}")
             node = Node(
                 f"Client{client_id}_Node{i}",
                 node_indices,
@@ -247,58 +285,58 @@ class Client(threading.Thread):
         """
         Sends the updated model parameters to all other clients.
         """
-        for client_id in range(self.num_clients):
+        for client_id in self.joint_clients:
             # if client_id != self.client_id:
             # print("communicate, self.id, client id",
             #       self.client_id, client_id, self.joint_clients)
-            if (client_id in self.joint_clients) and (client_id != self.client_id):
-                target_client = self.clients_list[client_id]
-                # Send (copy) the global model parameters to the target client
-                # print(
-                #     f"client {self.client_id} send model para to target client {target_client.client_id}")
-                # parameters_lock[client_id].acquire()
-                # print("++++++++")
-                # target_client.received_models.append(
-                #     copy.deepcopy(self.global_model))
-                # parameters_lock[client_id].release()
-                target_client.received_models_q.put(
-                    copy.deepcopy(self.global_model))
-                print(
-                    f"Client {self.client_id} sent model parameters to Client {client_id}."
-                )
+            # if (client_id in self.joint_clients) and (client_id != self.client_id):
+            target_client = self.clients_list[client_id]
+            # Send (copy) the global model parameters to the target client
+            # print(
+            #     f"client {self.client_id} send model para to target client {target_client.client_id}")
+            # parameters_lock[client_id].acquire()
+            # print("++++++++")
+            # target_client.received_models.append(
+            #     copy.deepcopy(self.global_model))
+            # parameters_lock[client_id].release()
+            target_client.received_models_q.put(
+                copy.deepcopy(self.global_model))
+            print(
+                f"Client {self.client_id} sent model parameters to Client {client_id}."
+            )
 
-                # update the parameter if receive others'
-                if self.received_models_q.qsize() != 0:
-                    tmp_received_models = []
-                    for _ in range(self.received_models_q.qsize()):
-                        tmp_model = self.received_models_q.get()
-                        tmp_received_models.append(tmp_model)
-                        self.received_models.put(tmp_model)
-                    # tmp_received_models.append(self.global_model)
-                    state_dicts = [model.state_dict()
-                                   for model in tmp_received_models]
-                    # Get keys from the state_dict
-                    param_keys = state_dicts[0].keys()
-                    # Initialize new state_dict for averaged parameters
-                    averaged_state_dict = {}
-                    for key in param_keys:
-                        # Sum parameters from all models
-                        params = [state_dict[key]
-                                  for state_dict in state_dicts]
-                        # Stack parameters and compute mean
-                        stacked_params = torch.stack(params, dim=0)
-                        averaged_param = torch.mean(stacked_params, dim=0)
-                        averaged_state_dict[key] = averaged_param
-                    # Load averaged parameters into the global model
-                    self.global_model.load_state_dict(averaged_state_dict)
+            # update the parameter if receive others'
+            if self.received_models_q.qsize() != 0:
+                tmp_received_models = []
+                for _ in range(self.received_models_q.qsize()):
+                    tmp_model = self.received_models_q.get()
+                    tmp_received_models.append(tmp_model)
+                    self.received_models.put(tmp_model)
+                # tmp_received_models.append(self.global_model)
+                state_dicts = [model.state_dict()
+                               for model in tmp_received_models]
+                # Get keys from the state_dict
+                param_keys = state_dicts[0].keys()
+                # Initialize new state_dict for averaged parameters
+                averaged_state_dict = {}
+                for key in param_keys:
+                    # Sum parameters from all models
+                    params = [state_dict[key]
+                              for state_dict in state_dicts]
+                    # Stack parameters and compute mean
+                    stacked_params = torch.stack(params, dim=0)
+                    averaged_param = torch.mean(stacked_params, dim=0)
+                    averaged_state_dict[key] = averaged_param
+                # Load averaged parameters into the global model
+                self.global_model.load_state_dict(averaged_state_dict)
 
-                print(
-                    "target client ",
-                    target_client.client_id,
-                    target_client.received_models.qsize(),
-                    target_client.received_models_q.qsize(),
-                    len(target_client.joint_clients),
-                )
+            print(
+                "target client ",
+                target_client.client_id,
+                target_client.received_models.qsize(),
+                target_client.received_models_q.qsize(),
+                len(target_client.joint_clients),
+            )
 
     def average_models(self):
         """
@@ -417,7 +455,7 @@ def test_global_model(global_model, test_loader):
 
 
 if __name__ == "__main__":
-    f = open("./results/res_{}_{}_{}.txt".format(num_clients, num_rounds,
+    f = open("./results/res_adfed_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
     clients_global_models = [ComplexCNN().cuda() for _ in range(num_clients)]
@@ -431,22 +469,22 @@ if __name__ == "__main__":
     accuracy_list = []
     loss_list = []
 
+    node_indices_list = create_iid_splits(
+        train_dataset, client_indices, num_nodes_list
+    )
     for round_num in range(num_rounds):
         print(f"\n=== Round {round_num + 1} ===")
         # Create a list to hold clients for this round
         clients_list = []
         # Create clients and their nodes for this round
-        for i, c_indices in enumerate(client_indices):
+        for i in range(num_clients):
             # node_indices_list = create_noniid_splits(train_dataset, c_indices, 4)
 
-            node_indices_list = create_iid_splits(
-                train_dataset, c_indices, num_nodes_list[i]
-            )
             # Use the previous global_model if exists
             global_model = clients_global_models[i]
             client = Client(
                 i,
-                node_indices_list,
+                node_indices_list[i],
                 train_dataset,
                 num_clients,
                 clients_list,
