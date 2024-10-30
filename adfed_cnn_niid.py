@@ -34,7 +34,7 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 
 # Set the simulation rounds
-num_rounds = 10000
+num_rounds = 1000
 batch_size = 512
 accumulation_steps = 8
 alpha_list = [0.5, 0.5, 0.5, 0.5]

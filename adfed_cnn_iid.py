@@ -2,7 +2,10 @@ import threading
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+import torch.optim as optim  # lulu
 import torchvision
+
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
 import numpy as np
@@ -34,9 +37,9 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 
 # Set the simulation rounds
-num_rounds = 10000
-batch_size = 512
-accumulation_steps = 8
+num_rounds = 2000
+batch_size = 2048
+accumulation_steps = 2  #
 total_samples = len(train_dataset)
 fraction = 0.24
 num_samples = int(total_samples * fraction)
@@ -154,6 +157,7 @@ class Node(threading.Thread):
             Subset(dataset, data_indices), batch_size=batch_size, shuffle=True
         )
         self.local_model = copy.deepcopy(global_model).cuda()
+        # self.optimizer = optim.SGD(self.local_model.parameters(), lr=0.003)  # lulu
         self.criterion = nn.CrossEntropyLoss()
         self.gradients = None  # Placeholder for storing gradients
         # Queue to send gradients to aggregator
@@ -168,16 +172,21 @@ class Node(threading.Thread):
         for data, target in self.data_loader:
             data = data.cuda()
             target = target.cuda()
+            
+            if t == 0:
+                self.local_model.zero_grad()  # lulu
+            # self.optimizer.zero_grad()  # lulu
+            
             output = self.local_model(data)
             loss = self.criterion(output, target)
-            loss = loss/accumulation_steps
+            loss = loss / accumulation_steps  # lulu
             loss.backward()
 
-            if t+1 == accumulation_steps:
+            if (t + 1) % accumulation_steps == 0:
                 break
             t += 1
         self.gradients = [
-            param.grad.clone().detach().cpu() for param in self.local_model.cpu().parameters()
+            param.grad.clone().detach().cpu() for param in self.local_model.parameters()
         ]
         self.aggregator_queue.put(self.gradients)
         print(f"{self.node_id} sent gradients to aggregator.")
@@ -214,7 +223,7 @@ class Client(threading.Thread):
         # self.optimizer = torch.optim.Adam(
         #     self.global_model.parameters(), lr=0.001)
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
+            self.global_model.parameters(), lr=0.03, momentum=0.9, weight_decay=5e-4
         )
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
@@ -350,7 +359,7 @@ class Client(threading.Thread):
             #     self.received_models_q.qsize(),
             #     len(self.joint_clients),
             # )
-            # time.sleep(0.1)
+            time.sleep(0.1)
             # if self.received_models_q.qsize() == len(self.joint_clients):
             #     break
             if (self.received_models.qsize() + self.received_models_q.qsize()) == len(
@@ -458,7 +467,12 @@ if __name__ == "__main__":
     f = open("./results/res_adfed_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
-    clients_global_models = [ComplexCNN().cuda() for _ in range(num_clients)]
+    # init_model = ComplexCNN()
+    clients_global_models=list()
+    for i in range(num_clients):
+        torch.manual_seed(seed)
+        clients_global_models.append(ComplexCNN().cuda())
+    # clients_global_models = [copy.deepcopy(ComplexCNN()) for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     # Prepare test loader
