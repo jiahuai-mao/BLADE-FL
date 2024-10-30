@@ -272,6 +272,8 @@ class Client(threading.Thread):
             data = data.cuda()
             target = target.cuda()
             output = self.global_model(data)
+            if t == 0:
+                self.global_model.zero_grad()  # lulu
             loss = self.criterion(output, target)
             # self.optimizer.zero_grad()
             loss = loss/accumulation_steps
@@ -459,7 +461,10 @@ if __name__ == "__main__":
     f = open(
         "./results/res_adpsgd_niid_{}_{}.txt".format(num_clients, num_rounds), "a+")
     # Initialize clients' global models (None at the start)
-    clients_global_models = [ComplexCNN().cuda() for _ in range(num_clients)]
+    # clients_global_models = [ComplexCNN().cuda() for _ in range(num_clients)]
+    init_model = ComplexCNN()
+    clients_global_models = [copy.deepcopy(
+        init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     accuracy_list = []

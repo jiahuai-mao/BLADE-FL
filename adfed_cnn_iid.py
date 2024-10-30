@@ -172,11 +172,11 @@ class Node(threading.Thread):
         for data, target in self.data_loader:
             data = data.cuda()
             target = target.cuda()
-            
+
             if t == 0:
                 self.local_model.zero_grad()  # lulu
             # self.optimizer.zero_grad()  # lulu
-            
+
             output = self.local_model(data)
             loss = self.criterion(output, target)
             loss = loss / accumulation_steps  # lulu
@@ -467,12 +467,13 @@ if __name__ == "__main__":
     f = open("./results/res_adfed_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
-    # init_model = ComplexCNN()
-    clients_global_models=list()
-    for i in range(num_clients):
-        torch.manual_seed(seed)
-        clients_global_models.append(ComplexCNN().cuda())
-    # clients_global_models = [copy.deepcopy(ComplexCNN()) for _ in range(num_clients)]
+    # clients_global_models=list()
+    # for i in range(num_clients):
+    #     torch.manual_seed(seed)
+    #     clients_global_models.append(ComplexCNN().cuda())
+    init_model = ComplexCNN()
+    clients_global_models = [copy.deepcopy(
+        init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     # Prepare test loader
