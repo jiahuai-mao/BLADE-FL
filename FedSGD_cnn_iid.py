@@ -305,7 +305,7 @@ def test_global_model(global_model, test_loader):
 
 
 if __name__ == "__main__":
-    f = open("./results/res_FedAvg_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
+    f = open("./results/res_FedSGD_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     init_model = ComplexCNN()
     clients_global_models = [copy.deepcopy(
@@ -347,16 +347,8 @@ if __name__ == "__main__":
         clients_global_models = [
             client.global_model for client in clients_list]
 
-        each_epoch_acc = []
-        each_epoch_loss = []
-        for mo in clients_global_models:
-            global_model = mo
-            acc, loss = test_global_model(global_model, test_loader)
-            each_epoch_acc.append(acc)
-            each_epoch_loss.append(loss)
-        accuracy = np.mean(each_epoch_acc)
-        avg_loss = np.mean(each_epoch_loss)
-
+        global_model = clients_global_models[0]
+        accuracy, avg_loss = test_global_model(global_model, test_loader)
         accuracy_list.append(accuracy)
         loss_list.append(avg_loss)
         if accuracy >= best_acc:
