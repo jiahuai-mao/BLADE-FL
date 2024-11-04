@@ -237,6 +237,7 @@ class Client(threading.Thread):
         num_clients,
         clients_list,
         joint_clients,
+        learn_rate,
         global_model=None,
     ):
         threading.Thread.__init__(self)
@@ -252,11 +253,11 @@ class Client(threading.Thread):
         self.aggregator_queue = Queue()  # Queue to collect gradients from nodes
         self.clients_list = clients_list  # Reference to other clients
         self.joint_clients = joint_clients
+        self.learn_rate = learn_rate
         # self.optimizer = torch.optim.Adam(
         #     self.global_model.parameters(), lr=0.001)
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
-        )
+            self.global_model.parameters(), lr=self.learn_rate)
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
         # Initialize nodes
@@ -507,7 +508,8 @@ if __name__ == "__main__":
     # Prepare test loader
     test_loader = DataLoader(
         test_dataset_full, batch_size=batch_size, shuffle=False)
-
+    learn_rate = 0.01
+    momentum = 0.99
     best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []
@@ -531,6 +533,7 @@ if __name__ == "__main__":
                 num_clients,
                 clients_list,
                 joint_clients[i],
+                learn_rate,
                 global_model=global_model,
             )
             clients_list.append(client)
@@ -546,6 +549,8 @@ if __name__ == "__main__":
         # Store the updated global models for the next round
         clients_global_models = [
             client.global_model for client in clients_list]
+        if (round_num+1) % 10 == 0:
+            learn_rate = learn_rate*momentum
         # Optionally, you can evaluate the global model here
         # For example, test accuracy on a validation set
         # Store the updated global models for the next round

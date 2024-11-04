@@ -221,7 +221,7 @@ class Client(threading.Thread):
     Represents a client that manages its nodes and communicates with other clients.
     """
 
-    def __init__(self, client_id, node_indices_list, dataset, num_clients, clients_list, joint_clients, global_model=None):
+    def __init__(self, client_id, node_indices_list, dataset, num_clients, clients_list, joint_clients, learn_rate, global_model=None):
         threading.Thread.__init__(self)
         self.client_id = client_id
         # self.nodes = []
@@ -239,11 +239,12 @@ class Client(threading.Thread):
         self.aggregator_queue = Queue()  # Queue to collect gradients from nodes
         self.clients_list = clients_list  # Reference to other clients
         self.joint_clients = joint_clients
+        self.learn_rate = learn_rate
         # self.optimizer = torch.optim.Adam(
         #     self.global_model.parameters(), lr=0.001)
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.global_model.parameters(
-        ), lr=0.01, momentum=0.9, weight_decay=5e-4)
+        ), lr=self.learn_rate)
         self.data_loader = DataLoader(
             Subset(dataset, node_indices_list),
             batch_size=batch_size,
@@ -471,6 +472,8 @@ if __name__ == "__main__":
     loss_list = []
     # Prepare test loader
     test_loader = DataLoader(test_dataset_full, batch_size=32, shuffle=False)
+    learn_rate = 0.01
+    momentum = 0.99
     best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []
@@ -487,7 +490,8 @@ if __name__ == "__main__":
             # Use the previous global_model if exists
             global_model = clients_global_models[i]
             client = Client(i, node_indices_list[i], train_dataset,
-                            num_clients, clients_list, joint_clients[i], global_model=global_model)
+                            num_clients, clients_list, joint_clients[i],
+                            learn_rate, global_model=global_model)
             clients_list.append(client)
         # Update clients_list in each client
         for client in clients_list:
@@ -505,6 +509,8 @@ if __name__ == "__main__":
         # Store the updated global models for the next round
         clients_global_models = [
             client.global_model.cuda() for client in clients_list]
+        if (round_num+1) % 10 == 0:
+            learn_rate = learn_rate*momentum
         # Evaluate the global model (using the first client's model)
         global_model = clients_global_models[0]
         # accuracy, avg_loss = test_global_model(global_model, test_loader)
