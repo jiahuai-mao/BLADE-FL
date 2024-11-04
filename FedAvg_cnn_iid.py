@@ -20,8 +20,8 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
-num_clients = 4
-num_nodes_list = [6, 6, 6, 6]
+num_clients = 1
+num_nodes_list = [24]
 
 transform = transforms.Compose(
     [
@@ -41,7 +41,7 @@ num_rounds = 2000
 batch_size = 2048
 accumulation_steps = 1  #
 total_samples = len(train_dataset)
-fraction = 0.60
+fraction = 0.4
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
@@ -61,13 +61,7 @@ test_dataset_full = torchvision.datasets.FashionMNIST(
 
 
 def customize_topology():
-    topology = list()
-    for i in range(num_clients):
-        topology.append(
-            [(i - 1 + num_clients) % num_clients,
-             (i + 1 + num_clients) % num_clients]
-        )
-    return topology
+    return []
 
 
 def create_iid_splits(dataset, indices, num_nodes_list):
@@ -464,7 +458,7 @@ def test_global_model(global_model, test_loader):
 
 
 if __name__ == "__main__":
-    f = open("./results/res_adfed_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
+    f = open("./results/res_FedAvg_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
     # clients_global_models=list()
