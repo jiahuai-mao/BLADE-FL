@@ -188,7 +188,7 @@ class Client(threading.Thread):
         dataset,
         num_clients,
         clients_list,
-        joint_clients,
+        learning_rate,
         global_model=None,
     ):
         threading.Thread.__init__(self)
@@ -203,11 +203,10 @@ class Client(threading.Thread):
         self.received_models_q = Queue()
         self.aggregator_queue = Queue()
         self.clients_list = clients_list
-        self.joint_clients = joint_clients
-
+        self.learning_rate = learning_rate
+        # learning_rate = optimizer.param_groups[0]['lr']
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4
-        )
+            self.global_model.parameters(), lr=self.learning_rate)
 
         for i, node_indices in enumerate(node_indices_list):
 
@@ -242,6 +241,10 @@ class Client(threading.Thread):
         print(f"Client {self.client_id} finished communication.")
 
         self.average_models()
+
+        self.real_learning_rate = self.optimizer.param_groups[0]['lr']
+        self.real_momentum = self.optimizer.param_groups[0]['momentum']
+
         print(
             f"Client {self.client_id} updated its model by averaging received models."
         )
@@ -313,6 +316,8 @@ if __name__ == "__main__":
     test_loader = DataLoader(
         test_dataset_full, batch_size=batch_size, shuffle=False)
 
+    learning_rate = 0.01
+    momentum = 0.99
     best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []
@@ -334,7 +339,7 @@ if __name__ == "__main__":
                 train_dataset,
                 num_clients,
                 clients_list,
-                None,
+                learning_rate,
                 global_model=global_model,
             )
             clients_list.append(client)
@@ -346,6 +351,11 @@ if __name__ == "__main__":
             client.join()
         clients_global_models = [
             client.global_model for client in clients_list]
+        # learning_rate_list = [
+        #     client.real_learning_rate for client in clients_list]
+        # momentum_list = [client.real_momentum for client in clients_list]
+        if (round_num+1) % 10 == 0:
+            learning_rate = learning_rate*momentum
 
         global_model = clients_global_models[0]
         accuracy, avg_loss = test_global_model(global_model, test_loader)
@@ -355,7 +365,7 @@ if __name__ == "__main__":
             best_acc = accuracy
             best_round = round_num
         print(
-            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
+            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}, Learning rate: {learning_rate:.4f}"
         )
         f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
                 round_num, accuracy, avg_loss, best_acc, best_round))
