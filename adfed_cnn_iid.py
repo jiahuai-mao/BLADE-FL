@@ -25,9 +25,9 @@ num_nodes_list = [6, 6, 6, 6]
 
 transform = transforms.Compose(
     [
-        transforms.Resize((32, 32)),
+        # transforms.Resize((32, 32)),
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
+        # transforms.Normalize((0.1307,), (0.3081,))
     ]
 )
 
@@ -41,7 +41,9 @@ num_rounds = 2000
 batch_size = 2048
 accumulation_steps = 1  #
 total_samples = len(train_dataset)
-fraction = 0.60
+fraction = 0.4
+learn_rate = 0.01
+momentum = 0.99
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
@@ -117,31 +119,30 @@ def print_class_distribution(dataset, indices, title="Dataset"):
 class ComplexCNN(nn.Module):
     def __init__(self, input_channel=1, num_classes=10):
         super(ComplexCNN, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.Tanh(),
-            # nn.MaxPool2d(kernel_size=2),
+        self.conv1 = nn.Sequential(         # input shape (1, 28, 28)
+            nn.Conv2d(
+                in_channels=1,              # input height
+                out_channels=16,            # n_filters
+                kernel_size=5,              # filter size
+                stride=1,                   # filter movement/step
+                padding=2,                  # if want same width and length of this image after Conv2d, padding=(kernel_size-1)/2 if stride=1
+            ),                              # output shape (16, 28, 28)
+            nn.ReLU(),                      # activation
+            nn.MaxPool2d(kernel_size=2),    # choose max value in 2x2 area, output shape (16, 14, 14)
         )
-
-        self.classifier = nn.Sequential(
-            nn.Linear(128 * 8 * 8, 512),
-            nn.Tanh(),
-            nn.Linear(512, num_classes),
+        self.conv2 = nn.Sequential(         # input shape (16, 14, 14)
+            nn.Conv2d(16, 32, 5, 1, 2),     # output shape (32, 14, 14)
+            nn.ReLU(),                      # activation
+            nn.MaxPool2d(2),                # output shape (32, 7, 7)
         )
+        self.out = nn.Linear(32 * 7 * 7, 10)   # fully connected layer, output 10 classes
 
     def forward(self, x):
-        x = self.features(x)
-        # print("111 ",x.shape)
-        x = torch.flatten(x, 1)
-        # print("222 ",x.shape)
-        x = self.classifier(x)
-        return x
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = x.view(x.size(0), -1)           # flatten the output of conv2 to (batch_size, 32 * 7 * 7)
+        output = self.out(x)
+        return output    # return x for visualization
 
 
 class Node(threading.Thread):
@@ -481,8 +482,6 @@ if __name__ == "__main__":
     test_loader = DataLoader(
         test_dataset_full, batch_size=batch_size, shuffle=False)
 
-    learn_rate = 0.01
-    momentum = 0.99
     best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []

@@ -37,10 +37,14 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 
 num_rounds = 2000
-batch_size = 2048
-accumulation_steps = 1
+batch_size = 128
+accumulation_steps = 2
 total_samples = len(train_dataset)
-fraction = 0.4
+fraction = 0.2
+learning_rate = 0.1
+lr_decay = 0.95
+
+lr_decay_step=25
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
@@ -53,9 +57,12 @@ for i in range(num_clients):
     client_indices.append(subset_indices)
 
 
-test_dataset_full = torchvision.datasets.FashionMNIST(
-    root="./data", train=False, download=True, transform=transform
-)
+# test_dataset_full = torchvision.datasets.FashionMNIST(
+#     root="./data", train=False, download=True, transform=transform
+# )
+
+random.shuffle(total_indices)
+test_dataset_full=Subset(train_dataset, total_indices[:1000])
 
 
 def create_iid_splits(dataset, indices, num_nodes_list):
@@ -100,34 +107,32 @@ def print_class_distribution(dataset, indices, title="Dataset"):
 
 
 class ComplexCNN(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
+    def __init__(self, in_channels=1, hidden_size=200, num_classes=10):
         super(ComplexCNN, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.Tanh(),
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_size
+        self.num_classes = num_classes
 
+        self.features = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=self.in_channels, out_channels=self.hidden_channels, kernel_size=(5, 5), padding=1, stride=1, bias=True),
+            torch.nn.ReLU(True),
+            torch.nn.MaxPool2d(kernel_size=(2, 2), padding=1),
+            torch.nn.Conv2d(in_channels=self.hidden_channels, out_channels=self.hidden_channels * 2, kernel_size=(5, 5), padding=1, stride=1, bias=True),
+            torch.nn.ReLU(True),
+            torch.nn.MaxPool2d(kernel_size=(2, 2), padding=1)
         )
-
-        self.classifier = nn.Sequential(
-            nn.Linear(128 * 8 * 8, 512),
-            nn.Tanh(),
-            nn.Linear(512, num_classes),
+        self.classifier = torch.nn.Sequential(
+            torch.nn.AdaptiveAvgPool2d((7, 7)),
+            torch.nn.Flatten(),
+            torch.nn.Linear(in_features=(self.hidden_channels * 2) * (7 * 7), out_features=512, bias=True),
+            torch.nn.ReLU(True),
+            torch.nn.Linear(in_features=512, out_features=self.num_classes, bias=True)
         )
 
     def forward(self, x):
         x = self.features(x)
-
-        x = torch.flatten(x, 1)
-
         x = self.classifier(x)
         return x
-
 
 class Node(threading.Thread):
     """
@@ -242,8 +247,8 @@ class Client(threading.Thread):
 
         self.average_models()
 
-        self.real_learning_rate = self.optimizer.param_groups[0]['lr']
-        self.real_momentum = self.optimizer.param_groups[0]['momentum']
+        # self.real_learning_rate = self.optimizer.param_groups[0]['lr']
+        # self.real_lr_decay = self.optimizer.param_groups[0]['lr_decay']
 
         print(
             f"Client {self.client_id} updated its model by averaging received models."
@@ -316,8 +321,6 @@ if __name__ == "__main__":
     test_loader = DataLoader(
         test_dataset_full, batch_size=batch_size, shuffle=False)
 
-    learning_rate = 0.01
-    momentum = 0.99
     best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []
@@ -353,9 +356,9 @@ if __name__ == "__main__":
             client.global_model for client in clients_list]
         # learning_rate_list = [
         #     client.real_learning_rate for client in clients_list]
-        # momentum_list = [client.real_momentum for client in clients_list]
-        if (round_num+1) % 10 == 0:
-            learning_rate = learning_rate*momentum
+        # lr_decay_list = [client.real_lr_decay for client in clients_list]
+        if (round_num+1) % lr_decay_step == 0:
+            learning_rate = learning_rate * lr_decay
 
         global_model = clients_global_models[0]
         accuracy, avg_loss = test_global_model(global_model, test_loader)

@@ -4,4 +4,4 @@
 # python adpsgd_cnn_niid.py
 # python dpsgd_cnn_iid.py
 # python dpsgd_cnn_niid.py
-python FedAvg_cnn_iid.py
+python FedSGD_cnn_iid.py
