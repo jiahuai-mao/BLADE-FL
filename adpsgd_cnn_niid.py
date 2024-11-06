@@ -40,9 +40,9 @@ alpha = 0.5
 # fraction = 0.30
 # num_samples = int(total_samples * fraction)
 
-test_dataset_full = torchvision.datasets.FashionMNIST(
-    root="./data", train=False, download=True, transform=transform
-)
+# test_dataset_full = torchvision.datasets.FashionMNIST(
+#     root="./data", train=False, download=True, transform=transform
+# )
 
 # Total number of samples in the dataset
 # num_samples = len(train_dataset)
@@ -61,6 +61,10 @@ num_samples = int(total_samples * fraction)
 indices = list(range(total_samples))
 # random.shuffle(indices)
 # subset_indices = indices[:num_samples]
+
+total_indices = list(range(total_samples))
+random.shuffle(total_indices)
+test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
 
 client_indices = []
@@ -508,7 +512,9 @@ if __name__ == "__main__":
         # For example, test accuracy on a validation set
         # Store the updated global models for the next round
         clients_global_models = [
-            client.global_model.cuda() for client in clients_list]
+            copy.deepcopy(client.global_model) for client in clients_list]
+        clients_list.clear()
+        torch.cuda.empty_cache()
         if (round_num+1) % 10 == 0:
             learn_rate = learn_rate*momentum
         # Evaluate the global model (using the first client's model)

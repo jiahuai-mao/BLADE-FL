@@ -36,15 +36,15 @@ train_dataset = torchvision.datasets.FashionMNIST(
 )
 
 
-num_rounds = 2000
-batch_size = 128
-accumulation_steps = 2
+num_rounds = 20000
+batch_size = 64
+accumulation_steps = 1
 total_samples = len(train_dataset)
-fraction = 0.2
-learning_rate = 0.1
+fraction = 0.4
+learning_rate = 0.01
 lr_decay = 0.95
 
-lr_decay_step=25
+lr_decay_step = 25
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
@@ -62,7 +62,7 @@ for i in range(num_clients):
 # )
 
 random.shuffle(total_indices)
-test_dataset_full=Subset(train_dataset, total_indices[:1000])
+test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
 
 def create_iid_splits(dataset, indices, num_nodes_list):
@@ -114,25 +114,30 @@ class ComplexCNN(nn.Module):
         self.num_classes = num_classes
 
         self.features = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=self.in_channels, out_channels=self.hidden_channels, kernel_size=(5, 5), padding=1, stride=1, bias=True),
+            torch.nn.Conv2d(in_channels=self.in_channels, out_channels=self.hidden_channels, kernel_size=(
+                5, 5), padding=1, stride=1, bias=True),
             torch.nn.ReLU(True),
             torch.nn.MaxPool2d(kernel_size=(2, 2), padding=1),
-            torch.nn.Conv2d(in_channels=self.hidden_channels, out_channels=self.hidden_channels * 2, kernel_size=(5, 5), padding=1, stride=1, bias=True),
+            torch.nn.Conv2d(in_channels=self.hidden_channels, out_channels=self.hidden_channels *
+                            2, kernel_size=(5, 5), padding=1, stride=1, bias=True),
             torch.nn.ReLU(True),
             torch.nn.MaxPool2d(kernel_size=(2, 2), padding=1)
         )
         self.classifier = torch.nn.Sequential(
             torch.nn.AdaptiveAvgPool2d((7, 7)),
             torch.nn.Flatten(),
-            torch.nn.Linear(in_features=(self.hidden_channels * 2) * (7 * 7), out_features=512, bias=True),
+            torch.nn.Linear(in_features=(self.hidden_channels * 2)
+                            * (7 * 7), out_features=512, bias=True),
             torch.nn.ReLU(True),
-            torch.nn.Linear(in_features=512, out_features=self.num_classes, bias=True)
+            torch.nn.Linear(in_features=512,
+                            out_features=self.num_classes, bias=True)
         )
 
     def forward(self, x):
         x = self.features(x)
         x = self.classifier(x)
         return x
+
 
 class Node(threading.Thread):
     """
@@ -247,9 +252,6 @@ class Client(threading.Thread):
 
         self.average_models()
 
-        # self.real_learning_rate = self.optimizer.param_groups[0]['lr']
-        # self.real_lr_decay = self.optimizer.param_groups[0]['lr_decay']
-
         print(
             f"Client {self.client_id} updated its model by averaging received models."
         )
@@ -353,7 +355,11 @@ if __name__ == "__main__":
         for client in clients_list:
             client.join()
         clients_global_models = [
-            client.global_model for client in clients_list]
+            copy.deepcopy(client.global_model) for client in clients_list]
+        for i, num_node in enumerate(num_nodes_list):
+            clients_list[i].nodes.clear()
+        clients_list.clear()
+        torch.cuda.empty_cache()
         # learning_rate_list = [
         #     client.real_learning_rate for client in clients_list]
         # lr_decay_list = [client.real_lr_decay for client in clients_list]

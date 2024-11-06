@@ -56,10 +56,14 @@ for i in range(num_clients):
     client_indices.append(subset_indices)
 
 # random.shuffle(total_indices)
-test_dataset_full = torchvision.datasets.FashionMNIST(
-    root="./data", train=False, download=True, transform=transform
-)
+# test_dataset_full = torchvision.datasets.FashionMNIST(
+#     root="./data", train=False, download=True, transform=transform
+# )
 # test_dataset_full = Subset(train_dataset, total_indices[:int(total_samples*fraction)])
+
+# total_indices = list(range(total_samples))
+random.shuffle(total_indices)
+test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
 
 def customize_topology():
@@ -125,22 +129,26 @@ class ComplexCNN(nn.Module):
                 out_channels=16,            # n_filters
                 kernel_size=5,              # filter size
                 stride=1,                   # filter movement/step
-                padding=2,                  # if want same width and length of this image after Conv2d, padding=(kernel_size-1)/2 if stride=1
+                # if want same width and length of this image after Conv2d, padding=(kernel_size-1)/2 if stride=1
+                padding=2,
             ),                              # output shape (16, 28, 28)
             nn.ReLU(),                      # activation
-            nn.MaxPool2d(kernel_size=2),    # choose max value in 2x2 area, output shape (16, 14, 14)
+            # choose max value in 2x2 area, output shape (16, 14, 14)
+            nn.MaxPool2d(kernel_size=2),
         )
         self.conv2 = nn.Sequential(         # input shape (16, 14, 14)
             nn.Conv2d(16, 32, 5, 1, 2),     # output shape (32, 14, 14)
             nn.ReLU(),                      # activation
             nn.MaxPool2d(2),                # output shape (32, 7, 7)
         )
-        self.out = nn.Linear(32 * 7 * 7, 10)   # fully connected layer, output 10 classes
+        # fully connected layer, output 10 classes
+        self.out = nn.Linear(32 * 7 * 7, 10)
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.conv2(x)
-        x = x.view(x.size(0), -1)           # flatten the output of conv2 to (batch_size, 32 * 7 * 7)
+        # flatten the output of conv2 to (batch_size, 32 * 7 * 7)
+        x = x.view(x.size(0), -1)
         output = self.out(x)
         return output    # return x for visualization
 
@@ -521,7 +529,11 @@ if __name__ == "__main__":
             client.join()
         # Store the updated global models for the next round
         clients_global_models = [
-            client.global_model for client in clients_list]
+            copy.deepcopy(client.global_model) for client in clients_list]
+        for i, num_node in enumerate(num_nodes_list):
+            clients_list[i].nodes.clear()
+        clients_list.clear()
+        torch.cuda.empty_cache()
 
         if (round_num+1) % 10 == 0:
             learn_rate = learn_rate*momentum

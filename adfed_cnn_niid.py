@@ -42,16 +42,20 @@ total_samples = len(train_dataset)
 fraction = 0.24
 num_samples = int(total_samples * fraction)
 
-test_dataset_full = torchvision.datasets.FashionMNIST(
-    root="./data", train=False, download=True, transform=transform
-)
+# test_dataset_full = torchvision.datasets.FashionMNIST(
+#     root="./data", train=False, download=True, transform=transform
+# )
 # test_dataset_full = Subset(train_dataset, total_indices[:int(total_samples*fraction)])
 
-total_indices = list(range(total_samples))
+# total_indices = list(range(total_samples))
 # client_indices = []
 # for i in range(num_clients):
 #     subset_indices = total_indices[:total_samples]
 #     client_indices.append(subset_indices)
+
+total_indices = list(range(total_samples))
+random.shuffle(total_indices)
+test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
 client_indices = []
 for i in range(num_clients):
@@ -548,7 +552,11 @@ if __name__ == "__main__":
             client.join()
         # Store the updated global models for the next round
         clients_global_models = [
-            client.global_model for client in clients_list]
+            copy.deepcopy(client.global_model) for client in clients_list]
+        for i, num_node in enumerate(num_nodes_list):
+            clients_list[i].nodes.clear()
+        clients_list.clear()
+        torch.cuda.empty_cache()
         if (round_num+1) % 10 == 0:
             learn_rate = learn_rate*momentum
         # Optionally, you can evaluate the global model here
