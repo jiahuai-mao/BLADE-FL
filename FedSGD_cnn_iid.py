@@ -37,10 +37,10 @@ train_dataset = torchvision.datasets.FashionMNIST(
 
 
 num_rounds = 20000
-batch_size = 64
+batch_size = 256
 accumulation_steps = 1
 total_samples = len(train_dataset)
-fraction = 0.4
+fraction = 0.2
 learning_rate = 0.01
 lr_decay = 0.95
 
@@ -62,7 +62,7 @@ for i in range(num_clients):
 # )
 
 random.shuffle(total_indices)
-test_dataset_full = Subset(train_dataset, total_indices[:1000])
+test_dataset_full = Subset(train_dataset, total_indices[:10000])
 
 
 def create_iid_splits(dataset, indices, num_nodes_list):
@@ -271,7 +271,9 @@ class Client(threading.Thread):
                 aggregated_gradients[idx] += grad.cuda()
 
         self.aggregated_gradients = [
-            grad / num_nodes for grad in aggregated_gradients]
+            grad for grad in aggregated_gradients]
+        # self.aggregated_gradients = [
+        #     grad / num_nodes for grad in aggregated_gradients]
 
     def communicate(self):
         """
