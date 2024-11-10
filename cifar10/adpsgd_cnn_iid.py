@@ -63,7 +63,6 @@ indices = list(range(total_samples))
 # subset_indices = indices[:num_samples]
 
 total_sample_num = num_samples*num_clients
-
 client_indices = list()
 # for i in range(num_clients):
 subset_indices = [list() for _ in range(num_clients)]

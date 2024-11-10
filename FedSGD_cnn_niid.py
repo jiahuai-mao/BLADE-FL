@@ -51,12 +51,13 @@ lr_decay_step = 25
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
-
 cluster_sample_num = [num*num_samples for num in num_nodes_list]
 total_sample_num = sum(cluster_sample_num)
+
+
 client_indices = list()
 for i in range(num_clients):
-    subset_indices = [list() for _ in range(num_nodes_list[i])]
+    subset_indices = list()
 
     iter_num = cluster_sample_num[i]//total_samples
 
@@ -68,14 +69,14 @@ for i in range(num_clients):
         cur_samples = np.array_split(cur_samples, num_nodes_list[i])
         random.shuffle(num_nodes_index)
         for j in num_nodes_index:
-            subset_indices[j].extend(cur_samples[j])
+            subset_indices.extend(cur_samples[j])
     if cluster_sample_num[i] % total_samples > 0:
         random.shuffle(total_indices)
         cur_samples = total_indices[:cluster_sample_num[i] % total_samples]
         cur_samples = np.array_split(cur_samples, num_nodes_list[i])
         random.shuffle(num_nodes_index)
         for j in num_nodes_index:
-            subset_indices[j].extend(cur_samples[j])
+            subset_indices.extend(cur_samples[j])
 
     client_indices.append(subset_indices)
 
@@ -84,19 +85,52 @@ for i in range(num_clients):
 # test_dataset_full = Subset(train_dataset, total_indices[:10000])
 
 
-def create_iid_splits(dataset, indices, num_nodes_list):
-    node_indices = list()
+def create_niid_splits(dataset, client_splits, num_nodes_list, alpha_list):
+    """
+    Splits the data among nodes in a non-IID manner.
+    Each node gets data from certain classes only.
+    """
+    indices = np.array(list(range(total_samples)))
+    labels = np.array(dataset.targets)[indices]
+    classes = np.unique(labels)
+    # np.random.shuffle(classes)
+    # np.random.shuffle(indices)
+    # node_splits = np.array_split(indices, num_clients)
+    # import pdb;pdb.set_trace()
+    node_indices = []
+    for i, (num_node, node_split) in enumerate(zip(num_nodes_list, client_splits)):
+        N = num_node
+        node_split = np.array(node_split)
+        node_indice = [list() for _ in range(num_node)]
+        np.random.shuffle(classes)
+        for classid in classes:
+            # offsets = np.random.randint(0, classes.shape[0], N)
+            # import pdb;pdb.set_trace()
+            cur_labels = node_split[labels[node_split]
+                                    == classid]  # need to check!!!
+            # print(alpha_list, i, num_nodes_list)
+            proportions = np.random.dirichlet([alpha_list[i]] * N)
+            class_size = len(cur_labels)
+            # Shuffle indices for each class
+            shuffled_indices = np.random.permutation(cur_labels)
+            # Allocate indices to nodes based on generated proportions
+            start_idx = 0
+            for i1 in range(N):
+                num_samples = int(proportions[i1] * class_size)
+                if i1+1 == N:
+                    num_samples = num_samples+class_size
+                node_indice[(i1+classid) % N].extend(
+                    shuffled_indices[start_idx:start_idx + num_samples])
+                start_idx += num_samples
+        # for classid in classes[num_node:]:
+        #     cur_labels = node_split[labels[node_split] == classid]
+        #     for index in cur_labels:
+        #         x = np.random.randint(0, num_node)
+        #         node_indice[x].append(index)
 
-    for i, num_nodes in enumerate(num_nodes_list):
-
-        cur_indices = indices[i]
-        node_indice = [list() for _ in range(num_nodes)]
-        for j in range(num_nodes):
-            random.shuffle(cur_indices)
-            subset_indices = cur_indices[:num_samples]
-            node_indice[j].extend(subset_indices)
         node_indices.append(node_indice)
-
+    # print(node_indices)
+    # print(class_splits)
     return node_indices
 
 
@@ -335,7 +369,7 @@ if __name__ == "__main__":
     accuracy_list = []
     loss_list = []
 
-    node_indices_list = create_iid_splits(
+    node_indices_list = create_niid_splits(
         train_dataset, client_indices, num_nodes_list
     )
     for round_num in range(num_rounds):

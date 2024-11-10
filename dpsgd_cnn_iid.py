@@ -11,7 +11,7 @@ import copy
 import time
 from queue import Queue
 
-seed = 0
+seed = 37
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -60,24 +60,47 @@ indices = list(range(total_samples))
 # random.shuffle(indices)
 # subset_indices = indices[:num_samples]
 
-total_indices = list(range(total_samples))
-# random.shuffle(total_indices)
-# test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
-client_indices = []
-for _ in range(num_clients):
-    random.shuffle(indices)
-    subset_indices = indices[:num_samples]
-    client_indices.append(subset_indices)
+total_indices = list(range(total_samples))
+total_sample_num = num_samples*num_clients
+
+client_indices = list()
+# for i in range(num_clients):
+subset_indices = [list() for _ in range(num_clients)]
+
+iter_num = total_sample_num//total_samples
+
+num_nodes_index = [_ for _ in range(num_clients)]
+
+for _ in range(iter_num):
+    random.shuffle(total_indices)
+    cur_samples = total_indices[:total_sample_num]
+    cur_samples = np.array_split(cur_samples, num_clients)
+    random.shuffle(num_nodes_index)
+    for j in num_nodes_index:
+        subset_indices[j].extend(cur_samples[j])
+
+if total_sample_num % total_samples > 0:
+    random.shuffle(total_indices)
+    cur_samples = total_indices[:total_sample_num % total_samples]
+    cur_samples = np.array_split(cur_samples, num_clients)
+    random.shuffle(num_nodes_index)
+    for j in num_nodes_index:
+        subset_indices[j].extend(cur_samples[j])
+
+client_indices = subset_indices
+
 
 
 def customize_topology():
     topology = list()
     for i in range(num_clients):
-        topology.append([(i-2+num_clients) % num_clients,
+        topology.append([
+                        # (i-2+num_clients) % num_clients,
                          (i-1+num_clients) % num_clients,
                          (i+1+num_clients) % num_clients,
-                        (i+2+num_clients) % num_clients])
+                        # (i+2+num_clients) % num_clients
+                        ])
     return topology
 
 
@@ -244,8 +267,12 @@ class Client(threading.Thread):
             for idx, grad in enumerate(gradients):
                 aggregated_gradients[idx] += grad
         # Average the gradients
+        
+        # self.aggregated_gradients = [
+        #     grad / num_nodes for grad in aggregated_gradients]
+        
         self.aggregated_gradients = [
-            grad / num_nodes for grad in aggregated_gradients]
+            grad for grad in aggregated_gradients]
         # Update global model parameters
         # self.global_model.train()
         # # with torch.no_grad():

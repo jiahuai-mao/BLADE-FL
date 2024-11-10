@@ -22,25 +22,35 @@ num_nodes_list = [6, 6, 6, 6]
 
 transform = transforms.Compose(
     [
-        transforms.Resize((32, 32)),
+        # transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ]
 )
 
-train_dataset = torchvision.datasets.FashionMNIST(
+train_dataset = torchvision.datasets.MNIST(
     root="./data", train=True, download=True, transform=transform
+)
+
+test_dataset = torchvision.datasets.MNIST(
+    root="./data", train=False, download=True, transform=transform
 )
 
 
 # Set the simulation rounds
-num_rounds = 1000
-batch_size = 512
-accumulation_steps = 8
-alpha_list = [0.5, 0.5, 0.5, 0.5]
+num_rounds = 2000
+batch_size = 256    #1024
+accumulation_steps = 1
 total_samples = len(train_dataset)
-fraction = 0.24
+fraction = 0.1  # 0.2
+learning_rate = 0.01  # 0.01
+lr_decay = 0.97  # 0.97
+lr_decay_step = 40 # 25
+
+# alpha_list = [0.3, 0.4, 0.5, 0.6]
+alpha_list = [0.5, 0.5, 0.5, 0.5]
 num_samples = int(total_samples * fraction)
+
 
 # test_dataset_full = torchvision.datasets.FashionMNIST(
 #     root="./data", train=False, download=True, transform=transform
@@ -54,15 +64,35 @@ num_samples = int(total_samples * fraction)
 #     client_indices.append(subset_indices)
 
 total_indices = list(range(total_samples))
-random.shuffle(total_indices)
-test_dataset_full = Subset(train_dataset, total_indices[:1000])
+# random.shuffle(total_indices)
+# test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
-client_indices = []
+cluster_sample_num = [num*num_samples for num in num_nodes_list]
+total_sample_num = sum(cluster_sample_num)
+
+client_indices = list()
 for i in range(num_clients):
-    subset_indices = []
-    for _ in range(num_nodes_list[i]):
+    subset_indices = list()
+
+    iter_num = cluster_sample_num[i]//total_samples
+
+    num_nodes_index = [_ for _ in range(num_nodes_list[i])]
+
+    for _ in range(iter_num):
         random.shuffle(total_indices)
-        subset_indices.extend(total_indices[:num_samples])
+        cur_samples = total_indices[:cluster_sample_num[i]]
+        cur_samples = np.array_split(cur_samples, num_nodes_list[i])
+        random.shuffle(num_nodes_index)
+        for j in num_nodes_index:
+            subset_indices.extend(cur_samples[j])
+    if cluster_sample_num[i] % total_samples > 0:
+        random.shuffle(total_indices)
+        cur_samples = total_indices[:cluster_sample_num[i] % total_samples]
+        cur_samples = np.array_split(cur_samples, num_nodes_list[i])
+        random.shuffle(num_nodes_index)
+        for j in num_nodes_index:
+            subset_indices.extend(cur_samples[j])
+
     client_indices.append(subset_indices)
 
 
@@ -152,33 +182,20 @@ def print_class_distribution(dataset, indices, title="Dataset"):
     print(print_str)
 
 
-class ComplexCNN(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.Tanh(),
-            # nn.MaxPool2d(kernel_size=2),
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Linear(128 * 8 * 8, 512),
-            nn.Tanh(),
-            nn.Linear(512, num_classes),
-        )
+class SimpleCNN(nn.Module):
+    def __init__(self, in_channels=1, hidden_size=200, num_classes=10):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, stride=1, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
+        self.fc2 = nn.Linear(128, 10)
 
     def forward(self, x):
-        x = self.features(x)
-        # print("111 ",x.shape)
-        x = torch.flatten(x, 1)
-        # print("222 ",x.shape)
-        x = self.classifier(x)
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        x = x.view(-1, 64 * 7 * 7)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
         return x
 
 
@@ -317,8 +334,11 @@ class Client(threading.Thread):
             for idx, grad in enumerate(gradients):
                 aggregated_gradients[idx] += grad.cuda()
         # Average the gradients
+        # self.aggregated_gradients = [
+        #     grad / num_nodes for grad in aggregated_gradients]
+        
         self.aggregated_gradients = [
-            grad / num_nodes for grad in aggregated_gradients]
+            grad for grad in aggregated_gradients]
         # Update global model parameters
         # self.global_model.train()
         # # with torch.no_grad():
@@ -504,14 +524,14 @@ if __name__ == "__main__":
     f = open("./results/res_adfed_niid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
-    init_model = ComplexCNN()
+    init_model = SimpleCNN()
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     # Prepare test loader
     test_loader = DataLoader(
-        test_dataset_full, batch_size=batch_size, shuffle=False)
+        test_dataset, batch_size=batch_size, shuffle=False)
     learn_rate = 0.01
     momentum = 0.99
     best_acc, best_round = 0.0, 0
@@ -522,6 +542,7 @@ if __name__ == "__main__":
         train_dataset, client_indices, num_nodes_list, alpha_list
     )
     for round_num in range(num_rounds):
+        start_time = time.time()
         print(f"\n=== Round {round_num + 1} ===")
         # Create a list to hold clients for this round
         clients_list = []
@@ -537,7 +558,7 @@ if __name__ == "__main__":
                 num_clients,
                 clients_list,
                 joint_clients[i],
-                learn_rate,
+                learning_rate,
                 global_model=global_model,
             )
             clients_list.append(client)
@@ -557,8 +578,9 @@ if __name__ == "__main__":
             clients_list[i].nodes.clear()
         clients_list.clear()
         torch.cuda.empty_cache()
-        if (round_num+1) % 10 == 0:
-            learn_rate = learn_rate*momentum
+        
+        if (round_num+1) % lr_decay_step == 0:
+            learning_rate = learning_rate * lr_decay
         # Optionally, you can evaluate the global model here
         # For example, test accuracy on a validation set
         # Store the updated global models for the next round
@@ -571,9 +593,10 @@ if __name__ == "__main__":
         if accuracy >= best_acc:
             best_acc = accuracy
             best_round = round_num
+        end_time = time.time()
         print(
-            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
+            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}, Learning rate: {learning_rate:.4f}"
         )
-        f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
-                round_num, accuracy, avg_loss, best_acc, best_round))
+        f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}, time {:.3f}\n".format(
+                round_num, accuracy, avg_loss, best_acc, best_round, end_time-start_time))
         f.flush()

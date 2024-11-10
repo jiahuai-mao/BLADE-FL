@@ -20,8 +20,8 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
-num_clients = 4
-num_nodes_list = [6, 6, 6, 6]
+num_clients = 1
+num_nodes_list = [6]
 
 transform = transforms.Compose(
     [
@@ -52,14 +52,34 @@ lr_decay_step = 40 # 25
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
-client_indices = []   
-for i in range(num_clients):
-    subset_indices = []
-    for _ in range(num_nodes_list[i]):
-        random.shuffle(total_indices)
-        subset_indices.extend(total_indices[:num_samples])
-    client_indices.append(subset_indices)
 
+cluster_sample_num = [num*num_samples for num in num_nodes_list]
+total_sample_num = sum(cluster_sample_num)
+
+client_indices = list()
+for i in range(num_clients):
+    subset_indices = [list() for _ in range(num_nodes_list[i])]
+
+    iter_num = cluster_sample_num[i]//total_samples
+
+    num_nodes_index = [_ for _ in range(num_nodes_list[i])]
+
+    for _ in range(iter_num):
+        random.shuffle(total_indices)
+        cur_samples = total_indices[:cluster_sample_num[i]]
+        cur_samples = np.array_split(cur_samples, num_nodes_list[i])
+        random.shuffle(num_nodes_index)
+        for j in num_nodes_index:
+            subset_indices[j].extend(cur_samples[j])
+    if cluster_sample_num[i] % total_samples > 0:
+        random.shuffle(total_indices)
+        cur_samples = total_indices[:cluster_sample_num[i] % total_samples]
+        cur_samples = np.array_split(cur_samples, num_nodes_list[i])
+        random.shuffle(num_nodes_index)
+        for j in num_nodes_index:
+            subset_indices[j].extend(cur_samples[j])
+
+    client_indices.append(subset_indices)
 
 # random.shuffle(total_indices)
 # test_dataset_full = Subset(train_dataset, total_indices[:1000])

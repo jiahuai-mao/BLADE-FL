@@ -45,6 +45,7 @@ total_samples = len(train_dataset)
 fraction = 0.24
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
+
 cluster_sample_num = [num*num_samples for num in num_nodes_list]
 total_sample_num = sum(cluster_sample_num)
 
