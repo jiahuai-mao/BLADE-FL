@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import torch.optim as optim  # lulu
+import torch.optim as optim
 import torchvision
 
 import torchvision.transforms as transforms
@@ -14,7 +14,7 @@ import copy
 import time
 from queue import Queue
 
-seed = 0
+seed = 37
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -27,27 +27,32 @@ transform = transforms.Compose(
     [
         # transforms.Resize((32, 32)),
         transforms.ToTensor(),
-        # transforms.Normalize((0.1307,), (0.3081,))
+        transforms.Normalize((0.1307,), (0.3081,))
     ]
 )
 
-train_dataset = torchvision.datasets.FashionMNIST(
+train_dataset = torchvision.datasets.MNIST(
     root="./data", train=True, download=True, transform=transform
+)
+
+test_dataset = torchvision.datasets.MNIST(
+    root="./data", train=False, download=True, transform=transform
 )
 
 
 # Set the simulation rounds
 num_rounds = 2000
-batch_size = 2048
-accumulation_steps = 1  #
+batch_size = 256    #1024
+accumulation_steps = 1
 total_samples = len(train_dataset)
-fraction = 0.4
-learn_rate = 0.01
-momentum = 0.99
+fraction = 0.1  # 0.2
+learning_rate = 0.01  # 0.01
+lr_decay = 0.97  # 0.97
+lr_decay_step = 40 # 25
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
-client_indices = []
+client_indices = []   
 for i in range(num_clients):
     subset_indices = []
     for _ in range(num_nodes_list[i]):
@@ -55,15 +60,9 @@ for i in range(num_clients):
         subset_indices.extend(total_indices[:num_samples])
     client_indices.append(subset_indices)
 
-# random.shuffle(total_indices)
-# test_dataset_full = torchvision.datasets.FashionMNIST(
-#     root="./data", train=False, download=True, transform=transform
-# )
-# test_dataset_full = Subset(train_dataset, total_indices[:int(total_samples*fraction)])
 
-# total_indices = list(range(total_samples))
-random.shuffle(total_indices)
-test_dataset_full = Subset(train_dataset, total_indices[:1000])
+# random.shuffle(total_indices)
+# test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
 
 def customize_topology():
@@ -71,7 +70,10 @@ def customize_topology():
     for i in range(num_clients):
         topology.append(
             [(i - 1 + num_clients) % num_clients,
-             (i + 1 + num_clients) % num_clients]
+             (i + 1 + num_clients) % num_clients,
+            #  (i + 2 + num_clients) % num_clients,
+            #  (i + 3 + num_clients) % num_clients
+             ]
         )
     return topology
 
@@ -120,37 +122,21 @@ def print_class_distribution(dataset, indices, title="Dataset"):
     print(print_str)
 
 
-class ComplexCNN(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
-        self.conv1 = nn.Sequential(         # input shape (1, 28, 28)
-            nn.Conv2d(
-                in_channels=1,              # input height
-                out_channels=16,            # n_filters
-                kernel_size=5,              # filter size
-                stride=1,                   # filter movement/step
-                # if want same width and length of this image after Conv2d, padding=(kernel_size-1)/2 if stride=1
-                padding=2,
-            ),                              # output shape (16, 28, 28)
-            nn.ReLU(),                      # activation
-            # choose max value in 2x2 area, output shape (16, 14, 14)
-            nn.MaxPool2d(kernel_size=2),
-        )
-        self.conv2 = nn.Sequential(         # input shape (16, 14, 14)
-            nn.Conv2d(16, 32, 5, 1, 2),     # output shape (32, 14, 14)
-            nn.ReLU(),                      # activation
-            nn.MaxPool2d(2),                # output shape (32, 7, 7)
-        )
-        # fully connected layer, output 10 classes
-        self.out = nn.Linear(32 * 7 * 7, 10)
+class SimpleCNN(nn.Module):
+    def __init__(self, in_channels=1, hidden_size=200, num_classes=10):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, stride=1, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
+        self.fc2 = nn.Linear(128, 10)
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        # flatten the output of conv2 to (batch_size, 32 * 7 * 7)
-        x = x.view(x.size(0), -1)
-        output = self.out(x)
-        return output    # return x for visualization
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        x = x.view(-1, 64 * 7 * 7)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
 
 class Node(threading.Thread):
@@ -188,7 +174,7 @@ class Node(threading.Thread):
 
             output = self.local_model(data)
             loss = self.criterion(output, target)
-            loss = loss / accumulation_steps  # lulu
+            # loss = loss / accumulation_steps  # lulu
             loss.backward()
 
             if (t + 1) % accumulation_steps == 0:
@@ -232,9 +218,9 @@ class Client(threading.Thread):
         self.joint_clients = joint_clients
         self.learn_rate = learn_rate
         # self.optimizer = torch.optim.Adam(
-        #     self.global_model.parameters(), lr=0.001)
+        #     self.global_model.parameters(), lr=self.learn_rate)
         self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=self.learn_rate)
+            self.global_model.parameters(), lr=self.learn_rate, momentum=0.9)
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
         # Initialize nodes
@@ -282,7 +268,7 @@ class Client(threading.Thread):
         """
         # Initialize aggregated gradients
         aggregated_gradients = [
-            torch.zeros_like(param) for param in self.global_model.parameters()
+            torch.zeros_like(param).cuda() for param in self.global_model.parameters()
         ]
         num_nodes = len(collected_gradients)
         # Sum gradients from all nodes
@@ -290,8 +276,11 @@ class Client(threading.Thread):
             for idx, grad in enumerate(gradients):
                 aggregated_gradients[idx] += grad.cuda()
         # Average the gradients
+        # self.aggregated_gradients = [
+        #     grad / num_nodes for grad in aggregated_gradients]
+        
         self.aggregated_gradients = [
-            grad / num_nodes for grad in aggregated_gradients]
+            grad for grad in aggregated_gradients]
         # Update global model parameters
         # self.global_model.train()
         # # with torch.no_grad():
@@ -481,14 +470,14 @@ if __name__ == "__main__":
     # for i in range(num_clients):
     #     torch.manual_seed(seed)
     #     clients_global_models.append(ComplexCNN().cuda())
-    init_model = ComplexCNN()
+    init_model = SimpleCNN()
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
     # Prepare test loader
     test_loader = DataLoader(
-        test_dataset_full, batch_size=batch_size, shuffle=False)
+        test_dataset, batch_size=batch_size, shuffle=False)
 
     best_acc, best_round = 0.0, 0
     accuracy_list = []
@@ -498,6 +487,7 @@ if __name__ == "__main__":
         train_dataset, client_indices, num_nodes_list
     )
     for round_num in range(num_rounds):
+        start_time = time.time()
         print(f"\n=== Round {round_num + 1} ===")
         # Create a list to hold clients for this round
         clients_list = []
@@ -514,7 +504,7 @@ if __name__ == "__main__":
                 num_clients,
                 clients_list,
                 joint_clients[i],
-                learn_rate,
+                learning_rate,
                 global_model=global_model,
             )
             clients_list.append(client)
@@ -535,8 +525,9 @@ if __name__ == "__main__":
         clients_list.clear()
         torch.cuda.empty_cache()
 
-        if (round_num+1) % 10 == 0:
-            learn_rate = learn_rate*momentum
+        if (round_num+1) % lr_decay_step == 0:
+            learning_rate = learning_rate * lr_decay
+
         # Optionally, you can evaluate the global model here
         # For example, test accuracy on a validation set
         # Store the updated global models for the next round
@@ -559,9 +550,11 @@ if __name__ == "__main__":
         if accuracy >= best_acc:
             best_acc = accuracy
             best_round = round_num
+        end_time = time.time()
         print(
-            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}"
+            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}, Learning rate: {learning_rate:.4f}"
         )
-        f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
-                round_num, accuracy, avg_loss, best_acc, best_round))
+        f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}, time {:.3f}\n".format(
+                round_num, accuracy, avg_loss, best_acc, best_round, end_time-start_time))
         f.flush()
+        

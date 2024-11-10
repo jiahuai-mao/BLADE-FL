@@ -14,7 +14,7 @@ import copy
 import time
 from queue import Queue
 
-seed = 0
+seed = 37
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -25,25 +25,28 @@ num_nodes_list = [24]
 
 transform = transforms.Compose(
     [
-        transforms.Resize((32, 32)),
+        # transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ]
 )
 
-train_dataset = torchvision.datasets.FashionMNIST(
+train_dataset = torchvision.datasets.MNIST(
     root="./data", train=True, download=True, transform=transform
 )
 
+test_dataset = torchvision.datasets.MNIST(
+    root="./data", train=False, download=True, transform=transform
+)
 
-num_rounds = 20000
-batch_size = 256
+
+num_rounds = 2000
+batch_size = 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
-fraction = 0.2
-learning_rate = 0.01
-lr_decay = 0.95
-
+fraction = 0.1
+learning_rate = 0.003
+lr_decay = 0.97
 lr_decay_step = 25
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
@@ -57,12 +60,8 @@ for i in range(num_clients):
     client_indices.append(subset_indices)
 
 
-# test_dataset_full = torchvision.datasets.FashionMNIST(
-#     root="./data", train=False, download=True, transform=transform
-# )
-
-random.shuffle(total_indices)
-test_dataset_full = Subset(train_dataset, total_indices[:10000])
+# random.shuffle(total_indices)
+# test_dataset_full = Subset(train_dataset, total_indices[:10000])
 
 
 def create_iid_splits(dataset, indices, num_nodes_list):
@@ -106,36 +105,20 @@ def print_class_distribution(dataset, indices, title="Dataset"):
     print(print_str)
 
 
-class ComplexCNN(nn.Module):
+class SimpleCNN(nn.Module):
     def __init__(self, in_channels=1, hidden_size=200, num_classes=10):
-        super(ComplexCNN, self).__init__()
-        self.in_channels = in_channels
-        self.hidden_channels = hidden_size
-        self.num_classes = num_classes
-
-        self.features = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=self.in_channels, out_channels=self.hidden_channels, kernel_size=(
-                5, 5), padding=1, stride=1, bias=True),
-            torch.nn.ReLU(True),
-            torch.nn.MaxPool2d(kernel_size=(2, 2), padding=1),
-            torch.nn.Conv2d(in_channels=self.hidden_channels, out_channels=self.hidden_channels *
-                            2, kernel_size=(5, 5), padding=1, stride=1, bias=True),
-            torch.nn.ReLU(True),
-            torch.nn.MaxPool2d(kernel_size=(2, 2), padding=1)
-        )
-        self.classifier = torch.nn.Sequential(
-            torch.nn.AdaptiveAvgPool2d((7, 7)),
-            torch.nn.Flatten(),
-            torch.nn.Linear(in_features=(self.hidden_channels * 2)
-                            * (7 * 7), out_features=512, bias=True),
-            torch.nn.ReLU(True),
-            torch.nn.Linear(in_features=512,
-                            out_features=self.num_classes, bias=True)
-        )
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, stride=1, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
+        self.fc2 = nn.Linear(128, 10)
 
     def forward(self, x):
-        x = self.features(x)
-        x = self.classifier(x)
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        x = x.view(-1, 64 * 7 * 7)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
         return x
 
 
@@ -319,11 +302,14 @@ def test_global_model(global_model, test_loader):
 if __name__ == "__main__":
     f = open("./results/res_FedSGD_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
-    init_model = ComplexCNN()
+    
+    init_model = SimpleCNN()
+    
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
+    
     test_loader = DataLoader(
-        test_dataset_full, batch_size=batch_size, shuffle=False)
+        test_dataset, batch_size=batch_size, shuffle=False)
 
     best_acc, best_round = 0.0, 0
     accuracy_list = []
@@ -356,15 +342,14 @@ if __name__ == "__main__":
             client.start()
         for client in clients_list:
             client.join()
+            
         clients_global_models = [
             copy.deepcopy(client.global_model) for client in clients_list]
         for i, num_node in enumerate(num_nodes_list):
             clients_list[i].nodes.clear()
         clients_list.clear()
         torch.cuda.empty_cache()
-        # learning_rate_list = [
-        #     client.real_learning_rate for client in clients_list]
-        # lr_decay_list = [client.real_lr_decay for client in clients_list]
+   
         if (round_num+1) % lr_decay_step == 0:
             learning_rate = learning_rate * lr_decay
 

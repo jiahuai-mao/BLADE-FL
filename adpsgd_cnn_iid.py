@@ -1,7 +1,11 @@
 import threading
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+import torch.optim as optim
 import torchvision
+
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
 import numpy as np
@@ -10,7 +14,7 @@ import copy
 import time
 from queue import Queue
 
-seed = 0
+seed = 37
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -19,40 +23,36 @@ torch.cuda.manual_seed(seed)
 
 transform = transforms.Compose(
     [
-        transforms.Resize((32, 32)),
+        # transforms.Resize((32, 32)),
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ]
 )
 
-train_dataset = torchvision.datasets.FashionMNIST(
+train_dataset = torchvision.datasets.MNIST(
     root="./data", train=True, download=True, transform=transform
 )
 
+test_dataset = torchvision.datasets.MNIST(
+    root="./data", train=False, download=True, transform=transform
+)
 
 # Set the simulation rounds
-num_rounds = 1000
-batch_size = 512
-accumulation_steps = 8
-# alpha_list = [0.3, 0.4, 0.5, 0.6]
-# total_samples = len(train_dataset)
-# fraction = 0.30
-# num_samples = int(total_samples * fraction)
 
-# test_dataset_full = torchvision.datasets.FashionMNIST(
-#     root="./data", train=False, download=True, transform=transform
-# )
 
-# Total number of samples in the dataset
-# num_samples = len(train_dataset)
-# indices = list(range(num_samples))
-# random.shuffle(indices)
-
-# Split the dataset indices into 4 equal parts for the 4 clients
-# client_indices = np.array_split(indices, 24)
 num_clients = 24
+
+
+num_rounds = 2000
+batch_size = 256    #1024
+accumulation_steps = 1
 total_samples = len(train_dataset)
-fraction = 0.24  # Change to 0.3 for 30%
+fraction = 0.1  # 0.2
+learning_rate = 0.01  # 0.01
+lr_decay = 0.97  # 0.97
+lr_decay_step = 40 # 25
+
+
 num_samples = int(total_samples * fraction)
 
 # Generate random indices for the subset
@@ -61,8 +61,8 @@ indices = list(range(total_samples))
 # subset_indices = indices[:num_samples]
 
 total_indices = list(range(total_samples))
-random.shuffle(total_indices)
-test_dataset_full = Subset(train_dataset, total_indices[:1000])
+# random.shuffle(total_indices)
+# test_dataset_full = Subset(train_dataset, total_indices[:1000])
 
 
 client_indices = []
@@ -75,10 +75,12 @@ for _ in range(num_clients):
 def customize_topology():
     topology = list()
     for i in range(num_clients):
-        topology.append([(i-2+num_clients) % num_clients,
+        topology.append([
+                        # (i-2+num_clients) % num_clients,
                          (i-1+num_clients) % num_clients,
                          (i+1+num_clients) % num_clients,
-                        (i+2+num_clients) % num_clients])
+                        # (i+2+num_clients) % num_clients
+                        ])
     return topology
 
 
@@ -147,33 +149,20 @@ def generate_doubly_stochastic_matrix(n, tol=1e-10, max_iter=1000):
     return A
 
 
-class ComplexCNN(nn.Module):
-    def __init__(self, input_channel=1, num_classes=10):
-        super(ComplexCNN, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(input_channel, 32, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.Tanh(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.Tanh(),
-            # nn.MaxPool2d(kernel_size=2),
-        )
-
-        self.classifier = nn.Sequential(
-            nn.Linear(128 * 8 * 8, 512),
-            nn.Tanh(),
-            nn.Linear(512, num_classes),
-        )
+class SimpleCNN(nn.Module):
+    def __init__(self, in_channels=1, hidden_size=200, num_classes=10):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, stride=1, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
+        self.fc2 = nn.Linear(128, 10)
 
     def forward(self, x):
-        x = self.features(x)
-        # print("111 ",x.shape)
-        x = torch.flatten(x, 1)
-        # print("222 ",x.shape)
-        x = self.classifier(x)
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        x = x.view(-1, 64 * 7 * 7)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
         return x
 
 
@@ -425,7 +414,7 @@ if __name__ == "__main__":
         "./results/res_adpsgd_iid_{}_{}.txt".format(num_clients, num_rounds), "a+")
     # Initialize clients' global models (None at the start)
     # clients_global_models = [ComplexCNN().cuda() for _ in range(num_clients)]
-    init_model = ComplexCNN()
+    init_model = SimpleCNN()
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
@@ -433,15 +422,15 @@ if __name__ == "__main__":
     accuracy_list = []
     loss_list = []
     # Prepare test loader
-    test_loader = DataLoader(test_dataset_full, batch_size=32, shuffle=False)
-    learn_rate = 0.01
-    momentum = 0.99
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False)
     best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []
     node_indices_list = create_iid_splits(
         train_dataset, client_indices, num_clients)
     for round_num in range(num_rounds):
+        start_time = time.time()
         print(f"\n=== Round {round_num + 1} ===")
         # Create a list to hold clients for this round
         clients_list = []
@@ -452,7 +441,7 @@ if __name__ == "__main__":
             global_model = clients_global_models[i]
             client = Client(i, node_indices_list[i], train_dataset,
                             num_clients, clients_list, joint_clients[i],
-                            learn_rate, global_model=global_model)
+                            learning_rate, global_model=global_model)
             clients_list.append(client)
         # Update clients_list in each client
         for client in clients_list:
@@ -469,11 +458,12 @@ if __name__ == "__main__":
         # For example, test accuracy on a validation set
         # Store the updated global models for the next round
         clients_global_models = [
-            copy.deepcopy(client.global_model) for client in clients_list]
+            copy.deepcopy(client.global_model).cuda() for client in clients_list]
         clients_list.clear()
         torch.cuda.empty_cache()
-        if (round_num+1) % 10 == 0:
-            learn_rate = learn_rate*momentum
+        if (round_num+1) % lr_decay_step == 0:
+            learning_rate = learning_rate * lr_decay
+        
         # Evaluate the global model (using the first client's model)
         global_model = clients_global_models[0]
         # accuracy, avg_loss = test_global_model(global_model, test_loader)
@@ -486,8 +476,10 @@ if __name__ == "__main__":
         if accuracy >= best_acc:
             best_acc = accuracy
             best_round = round_num
+        end_time = time.time()
         print(
-            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}")
-        f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}\n".format(
-                round_num, accuracy, avg_loss, best_acc, best_round))
+            f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}, Learning rate: {learning_rate:.4f}"
+        )
+        f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}, time {:.3f}\n".format(
+                round_num, accuracy, avg_loss, best_acc, best_round, end_time-start_time))
         f.flush()
