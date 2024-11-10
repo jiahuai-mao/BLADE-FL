@@ -83,20 +83,19 @@ for i in range(num_clients):
 # random.shuffle(total_indices)
 # test_dataset_full = Subset(train_dataset, total_indices[:10000])
 
-
 def create_iid_splits(dataset, indices, num_nodes_list):
     node_indices = list()
-
+    # flag1 = False
     for i, num_nodes in enumerate(num_nodes_list):
-
+        # random.shuffle(indices)
         cur_indices = indices[i]
         node_indice = [list() for _ in range(num_nodes)]
         for j in range(num_nodes):
-            random.shuffle(cur_indices)
-            subset_indices = cur_indices[:num_samples]
+            # random.shuffle(cur_indices)
+            subset_indices = cur_indices[j]
             node_indice[j].extend(subset_indices)
         node_indices.append(node_indice)
-
+    # print(np.array(node_indices).shape)
     return node_indices
 
 
@@ -322,12 +321,12 @@ def test_global_model(global_model, test_loader):
 if __name__ == "__main__":
     f = open("./results/res_FedSGD_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
-    
+
     init_model = SimpleCNN()
-    
+
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
-    
+
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False)
 
@@ -362,14 +361,14 @@ if __name__ == "__main__":
             client.start()
         for client in clients_list:
             client.join()
-            
+
         clients_global_models = [
             copy.deepcopy(client.global_model) for client in clients_list]
         for i, num_node in enumerate(num_nodes_list):
             clients_list[i].nodes.clear()
         clients_list.clear()
         torch.cuda.empty_cache()
-   
+
         if (round_num+1) % lr_decay_step == 0:
             learning_rate = learning_rate * lr_decay
 

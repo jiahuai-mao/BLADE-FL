@@ -20,8 +20,8 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
-num_clients = 1
-num_nodes_list = [6]
+num_clients = 4
+num_nodes_list = [6, 6, 6, 6]
 
 transform = transforms.Compose(
     [
@@ -42,13 +42,13 @@ test_dataset = torchvision.datasets.MNIST(
 
 # Set the simulation rounds
 num_rounds = 2000
-batch_size = 256    #1024
+batch_size = 256  # 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.1  # 0.2
 learning_rate = 0.01  # 0.01
 lr_decay = 0.97  # 0.97
-lr_decay_step = 40 # 25
+lr_decay_step = 40  # 25
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
@@ -91,8 +91,8 @@ def customize_topology():
         topology.append(
             [(i - 1 + num_clients) % num_clients,
              (i + 1 + num_clients) % num_clients,
-            #  (i + 2 + num_clients) % num_clients,
-            #  (i + 3 + num_clients) % num_clients
+             #  (i + 2 + num_clients) % num_clients,
+             #  (i + 3 + num_clients) % num_clients
              ]
         )
     return topology
@@ -106,11 +106,11 @@ def create_iid_splits(dataset, indices, num_nodes_list):
         cur_indices = indices[i]
         node_indice = [list() for _ in range(num_nodes)]
         for j in range(num_nodes):
-            random.shuffle(cur_indices)
-            subset_indices = cur_indices[:num_samples]
+            # random.shuffle(cur_indices)
+            subset_indices = cur_indices[j]
             node_indice[j].extend(subset_indices)
         node_indices.append(node_indice)
-    # print(node_indices)
+    # print(np.array(node_indices).shape)
     return node_indices
 
 
@@ -298,7 +298,7 @@ class Client(threading.Thread):
         # Average the gradients
         # self.aggregated_gradients = [
         #     grad / num_nodes for grad in aggregated_gradients]
-        
+
         self.aggregated_gradients = [
             grad for grad in aggregated_gradients]
         # Update global model parameters
@@ -577,4 +577,3 @@ if __name__ == "__main__":
         f.write("round {:05}, acc {:.6f}, loss {:.6f}, best acc {:.6f}, best round {:05}, time {:.3f}\n".format(
                 round_num, accuracy, avg_loss, best_acc, best_round, end_time-start_time))
         f.flush()
-        

@@ -48,6 +48,7 @@ fraction = 0.1
 learning_rate = 0.003
 lr_decay = 0.97
 lr_decay_step = 25
+alpha = 0.5
 num_samples = int(total_samples * fraction)
 total_indices = list(range(total_samples))
 
@@ -85,7 +86,7 @@ for i in range(num_clients):
 # test_dataset_full = Subset(train_dataset, total_indices[:10000])
 
 
-def create_niid_splits(dataset, client_splits, num_nodes_list, alpha_list):
+def create_niid_splits(dataset, client_splits, num_nodes_list, alpha):
     """
     Splits the data among nodes in a non-IID manner.
     Each node gets data from certain classes only.
@@ -109,7 +110,7 @@ def create_niid_splits(dataset, client_splits, num_nodes_list, alpha_list):
             cur_labels = node_split[labels[node_split]
                                     == classid]  # need to check!!!
             # print(alpha_list, i, num_nodes_list)
-            proportions = np.random.dirichlet([alpha_list[i]] * N)
+            proportions = np.random.dirichlet([alpha] * N)
             class_size = len(cur_labels)
             # Shuffle indices for each class
             shuffled_indices = np.random.permutation(cur_labels)
@@ -356,12 +357,12 @@ def test_global_model(global_model, test_loader):
 if __name__ == "__main__":
     f = open("./results/res_FedSGD_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
-    
+
     init_model = SimpleCNN()
-    
+
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
-    
+
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False)
 
@@ -370,7 +371,7 @@ if __name__ == "__main__":
     loss_list = []
 
     node_indices_list = create_niid_splits(
-        train_dataset, client_indices, num_nodes_list
+        train_dataset, client_indices, num_nodes_list, alpha
     )
     for round_num in range(num_rounds):
         print(f"\n=== Round {round_num + 1} ===")
@@ -396,14 +397,14 @@ if __name__ == "__main__":
             client.start()
         for client in clients_list:
             client.join()
-            
+
         clients_global_models = [
             copy.deepcopy(client.global_model) for client in clients_list]
         for i, num_node in enumerate(num_nodes_list):
             clients_list[i].nodes.clear()
         clients_list.clear()
         torch.cuda.empty_cache()
-   
+
         if (round_num+1) % lr_decay_step == 0:
             learning_rate = learning_rate * lr_decay
 

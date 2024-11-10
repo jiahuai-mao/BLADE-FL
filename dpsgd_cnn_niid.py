@@ -4,6 +4,7 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
+import torch.nn.functional as F
 import numpy as np
 import random
 import copy
@@ -33,20 +34,20 @@ test_dataset = torchvision.datasets.MNIST(
 )
 
 
-
 num_clients = 24
 
 num_rounds = 2000
-batch_size = 256    #1024
+batch_size = 256  # 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.1  # 0.2
 learning_rate = 0.01  # 0.01
 lr_decay = 0.97  # 0.97
-lr_decay_step = 40 # 25
+lr_decay_step = 40  # 25
 
 # alpha_list = [0.3, 0.4, 0.5, 0.6]
-alpha_list = [0.5, 0.5, 0.5, 0.5]
+# alpha_list = [0.5, 0.5, 0.5, 0.5]
+alpha = 0.5
 
 num_samples = int(total_samples * fraction)
 
@@ -58,7 +59,6 @@ indices = list(range(total_samples))
 total_indices = list(range(total_samples))
 # random.shuffle(total_indices)
 # test_dataset_full = Subset(train_dataset, total_indices[:1000])
-
 
 
 total_sample_num = num_samples*num_clients
@@ -85,8 +85,8 @@ def customize_topology():
     for i in range(num_clients):
         topology.append([
                         # (i-2+num_clients) % num_clients,
-                         (i-1+num_clients) % num_clients,
-                         (i+1+num_clients) % num_clients,
+                        (i-1+num_clients) % num_clients,
+                        (i+1+num_clients) % num_clients,
                         # (i+2+num_clients) % num_clients
                         ])
     return topology
@@ -298,7 +298,7 @@ class Client(threading.Thread):
         # Average the gradients
         # self.aggregated_gradients = [
         #     grad / num_nodes for grad in aggregated_gradients]
-        
+
         self.aggregated_gradients = [
             grad for grad in aggregated_gradients]
         # Update global model parameters
@@ -427,7 +427,7 @@ if __name__ == "__main__":
     # node_indices_list = create_iid_splits(
     #     train_dataset, client_indices, num_clients)
     node_indices_list = create_niid_splits(
-        train_dataset, client_indices, alpha_list
+        train_dataset, client_indices, alpha
     )
     for round_num in range(num_rounds):
         start_time = time.time()
@@ -460,7 +460,7 @@ if __name__ == "__main__":
         # clients_global_models = [
         #     client.global_model.cuda() for client in clients_list]
         clients_global_models = [
-            copy.deepcopy(client.global_model) for client in clients_list]
+            copy.deepcopy(client.global_model).cuda() for client in clients_list]
         clients_list.clear()
         torch.cuda.empty_cache()
         if (round_num+1) % lr_decay_step == 0:
