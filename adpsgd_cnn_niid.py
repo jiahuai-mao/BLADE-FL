@@ -464,6 +464,7 @@ if __name__ == "__main__":
         init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
+    best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []
     # Prepare test loader
@@ -517,6 +518,9 @@ if __name__ == "__main__":
         accuracy, avg_loss = test_global_model(global_model, test_loader)
         accuracy_list.append(accuracy)
         loss_list.append(avg_loss)
+        if accuracy >= best_acc:
+            best_acc = accuracy
+            best_round = round_num
         end_time = time.time()
         print(
             f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}, Learning rate: {learning_rate:.4f}"

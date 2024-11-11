@@ -355,7 +355,7 @@ def test_global_model(global_model, test_loader):
 
 
 if __name__ == "__main__":
-    f = open("./results/res_FedSGD_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
+    f = open("./results/res_FedSGD_niid_{}_{}_{}.txt".format(num_clients, num_rounds,
              "-".join([str(i) for i in num_nodes_list])), "a+")
 
     init_model = SimpleCNN()
