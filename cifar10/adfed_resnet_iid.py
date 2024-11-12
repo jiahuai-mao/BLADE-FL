@@ -42,7 +42,7 @@ test_dataset = torchvision.datasets.CIFAR10(
 
 
 num_rounds = 2000
-batch_size = 128  # 1024
+batch_size = 2  # 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.1  # 0.2
@@ -407,7 +407,7 @@ class Client(threading.Thread):
                     # Convert to float if necessary
                     if stacked_params.dtype == torch.long:
                         stacked_params = stacked_params.float()
-
+                                        
                     averaged_param = torch.mean(stacked_params, dim=0)
                     averaged_state_dict[key] = averaged_param
                 # Load averaged parameters into the global model
@@ -490,7 +490,8 @@ class Client(threading.Thread):
                 params = [state_dict[key] for state_dict in state_dicts]
                 # Stack parameters and compute mean
                 stacked_params = torch.stack(params, dim=0)
-                averaged_param = torch.mean(stacked_params, dim=0)
+                # print("================",stacked_params[1])
+                averaged_param = torch.mean(stacked_params.float(), dim=0)
                 averaged_state_dict[key] = averaged_param
             # Load averaged parameters into the global model
             self.global_model.load_state_dict(averaged_state_dict)
@@ -545,8 +546,7 @@ if __name__ == "__main__":
     # for i in range(num_clients):
     #     torch.manual_seed(seed)
     #     clients_global_models.append(ComplexCNN().cuda())
-    # init_model = ResNet18(10)
-    init_model = VGG16()
+    init_model = ResNet18(10)
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
