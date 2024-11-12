@@ -39,11 +39,11 @@ test_dataset = torchvision.datasets.CIFAR10(
 
 # Set the simulation rounds
 num_rounds = 2000
-batch_size = 2  # 1024
+batch_size = 128  # 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.1  # 0.2
-learning_rate = 0.01  # 0.01
+learning_rate = 0.1  # 0.01
 lr_decay = 0.97  # 0.97
 lr_decay_step = 40  # 25
 

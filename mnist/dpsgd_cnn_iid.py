@@ -41,7 +41,7 @@ test_dataset = torchvision.datasets.MNIST(
 
 num_clients = 24
 
-num_rounds = 2000
+num_rounds = 1000
 batch_size = 256    #1024
 accumulation_steps = 1
 total_samples = len(train_dataset)

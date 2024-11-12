@@ -1,24 +1,32 @@
 import threading
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+import torch.optim as optim
 import torchvision
+
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
-import torch.nn.functional as F
 import numpy as np
 import random
 import copy
 import time
 from queue import Queue
 
-seed = 0
+seed = 37
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 
+# num_clients = 1
+# num_nodes_list = [2]
 
-transform = transforms.Compose(
+num_clients = 4
+num_nodes_list = [6, 6, 6, 6]
+
+trans = transforms.Compose(
     [
         # transforms.Resize((32, 32)),
         transforms.ToTensor(),
@@ -27,114 +35,84 @@ transform = transforms.Compose(
 )
 
 train_dataset = torchvision.datasets.CIFAR10(
-    root="./data", train=True, download=True, transform=transform
+    root="./data", train=True, download=True, transform=trans
 )
 
 test_dataset = torchvision.datasets.CIFAR10(
-    root="./data", train=False, download=True, transform=transform
+    root="./data", train=False, download=True, transform=trans
 )
 
-num_clients = 24
 
 num_rounds = 2000
 batch_size = 128  # 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.1  # 0.2
-learning_rate = 0.01  # 0.01
+learning_rate = 0.003  # 0.01
 lr_decay = 0.97  # 0.97
 lr_decay_step = 40  # 25
-
-alpha = 0.5
 num_samples = int(total_samples * fraction)
-
-# Generate random indices for the subset
-indices = list(range(total_samples))
-# random.shuffle(indices)
-# subset_indices = indices[:num_samples]
-
 total_indices = list(range(total_samples))
+
+
+cluster_sample_num = [num*num_samples for num in num_nodes_list]
+total_sample_num = sum(cluster_sample_num)
+
+client_indices = list()
+for i in range(num_clients):
+    subset_indices = [list() for _ in range(num_nodes_list[i])]
+
+    iter_num = cluster_sample_num[i]//total_samples
+
+    num_nodes_index = [_ for _ in range(num_nodes_list[i])]
+
+    for _ in range(iter_num):
+        random.shuffle(total_indices)
+        cur_samples = total_indices[:cluster_sample_num[i]]
+        cur_samples = np.array_split(cur_samples, num_nodes_list[i])
+        random.shuffle(num_nodes_index)
+        for j in num_nodes_index:
+            subset_indices[j].extend(cur_samples[j])
+    if cluster_sample_num[i] % total_samples > 0:
+        random.shuffle(total_indices)
+        cur_samples = total_indices[:cluster_sample_num[i] % total_samples]
+        cur_samples = np.array_split(cur_samples, num_nodes_list[i])
+        random.shuffle(num_nodes_index)
+        for j in num_nodes_index:
+            subset_indices[j].extend(cur_samples[j])
+
+    client_indices.append(subset_indices)
+
 # random.shuffle(total_indices)
 # test_dataset_full = Subset(train_dataset, total_indices[:1000])
-
-
-total_sample_num = num_samples*num_clients
-client_indices = list()
-# for i in range(num_clients):
-subset_indices = list()
-iter_num = total_sample_num//total_samples
-for _ in range(iter_num):
-    random.shuffle(total_indices)
-    cur_samples = total_indices[:total_sample_num]
-    subset_indices.extend(cur_samples)
-
-if total_sample_num % total_samples > 0:
-    random.shuffle(total_indices)
-    cur_samples = total_indices[:total_sample_num % total_samples]
-    subset_indices.extend(cur_samples)
-
-client_indices = subset_indices
 
 
 def customize_topology():
     topology = list()
     for i in range(num_clients):
-        topology.append([
-                        # (i-2+num_clients) % num_clients,
-                        (i-1+num_clients) % num_clients,
-                        (i+1+num_clients) % num_clients,
-                        # (i+2+num_clients) % num_clients
-                        ])
+        topology.append(
+            [(i - 1 + num_clients) % num_clients,
+             (i + 1 + num_clients) % num_clients,
+             #  (i + 2 + num_clients) % num_clients,
+             #  (i + 3 + num_clients) % num_clients
+             ]
+        )
     return topology
 
 
-def create_niid_splits(dataset, client_splits, alpha):
-    """
-    Splits the data among nodes in a non-IID manner.
-    Each node gets data from certain classes only.
-    """
-    indices = np.array(list(range(total_samples)))
-    labels = np.array(dataset.targets)[indices]
-    classes = np.unique(labels)
-    # print(classes.shape)
-    # np.random.shuffle(classes)
-    # np.random.shuffle(indices)
-    # node_splits = np.array_split(indices, num_clients)
-    # import pdb;pdb.set_trace()
-    node_indices = []
-    node_split = client_splits
-    N = num_clients
-    node_split = np.array(node_split)
-    node_indice = [list() for _ in range(num_clients)]
-    np.random.shuffle(classes)
-    for classid in classes:
-        # offsets = np.random.randint(0, N, N)
-        # import pdb;pdb.set_trace()
-        cur_labels = node_split[labels[node_split]
-                                == classid]  # need to check!!!
-        # print(alpha_list, i, num_nodes_list)
-        proportions = np.random.dirichlet([alpha] * N)
-        class_size = len(cur_labels)
-        # Shuffle indices for each class
-        shuffled_indices = np.random.permutation(cur_labels)
-        # Allocate indices to nodes based on generated proportions
-        start_idx = 0
-        for i1 in range(N):
-            num_samples = int(proportions[i1] * class_size)
-            if i1+1 == N:
-                num_samples = num_samples+class_size
-            node_indice[(i1+classid) % N].extend(
-                shuffled_indices[start_idx:start_idx + num_samples])
-            start_idx += num_samples
-    # for classid in classes[num_node:]:
-    #     cur_labels = node_split[labels[node_split] == classid]
-    #     for index in cur_labels:
-    #         x = np.random.randint(0, num_node)
-    #         node_indice[x].append(index)
-
-    node_indices = node_indice
-    # print(node_indices)
-    # print(class_splits)
+def create_iid_splits(_, indices, num_nodes_list):
+    node_indices = list()
+    # flag1 = False
+    for i, num_nodes in enumerate(num_nodes_list):
+        # random.shuffle(indices)
+        cur_indices = indices[i]
+        node_indice = [list() for _ in range(num_nodes)]
+        for j in range(num_nodes):
+            # random.shuffle(cur_indices)
+            subset_indices = cur_indices[j]
+            node_indice[j].extend(subset_indices)
+        node_indices.append(node_indice)
+    # print(np.array(node_indices).shape)
     return node_indices
 
 
@@ -150,6 +128,7 @@ def print_class_distribution(dataset, indices, title="Dataset"):
     from collections import Counter
 
     # Extract labels for the given indices
+    # import pdb;pdb.set_trace()
     labels = [int(dataset.targets[idx]) for idx in indices]
 
     # Count occurrences of each class label
@@ -164,35 +143,27 @@ def print_class_distribution(dataset, indices, title="Dataset"):
             f"  Class {label}: Count {count}, Ratio {ratio:.4f}\n"
     print(print_str)
 
+# Define a VGG-like model
 
-def generate_doubly_stochastic_matrix(n, tol=1e-10, max_iter=1000):
-    """
-    Generates an n x n doubly stochastic matrix using the Sinkhorn-Knopp algorithm.
 
-    Parameters:
-    - n (int): Size of the matrix.
-    - tol (float): Tolerance for convergence.
-    - max_iter (int): Maximum number of iterations.
+class SimpleCNN(nn.Module):
+    def __init__(self, in_channels=3, hidden_size=200, num_classes=10):
+        super(SimpleCNN, self).__init__()
+        # Change in_channels to 3 to accommodate CIFAR-10 RGB images
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=5, stride=1, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2)
+        # Update the input size of fc1 based on the CIFAR-10 dimensions
+        self.fc1 = nn.Linear(64 * 8 * 8, 128)
+        self.fc2 = nn.Linear(128, num_classes)
 
-    Returns:
-    - A (ndarray): An n x n doubly stochastic matrix.
-    """
-    # Start with a random positive matrix
-    A = np.random.rand(n, n)
-
-    # Iteratively normalize rows and columns
-    for _ in range(max_iter):
-        # Normalize rows
-        A /= A.sum(axis=1, keepdims=True)
-        # Normalize columns
-        A /= A.sum(axis=0, keepdims=True)
-        # Check convergence
-        if np.allclose(A.sum(axis=1), 1, atol=tol) and np.allclose(A.sum(axis=0), 1, atol=tol):
-            break
-    else:
-        print("Warning: Maximum iterations reached before convergence.")
-    return A
-
+    def forward(self, x):
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        # Adjust the view size to match the output shape after pooling
+        x = x.view(-1, 64 * 8 * 8)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
 class VGG16(nn.Module):
     def __init__(self):
@@ -260,21 +231,75 @@ class VGG16(nn.Module):
         return x
 
 
+class Node(threading.Thread):
+    """
+    Represents a node in the network.
+    Each node performs local training and computes gradients.
+    """
+
+    def __init__(self, node_id, data_indices, dataset, global_model, aggregator_queue):
+        threading.Thread.__init__(self)
+        self.node_id = node_id
+        self.data_loader = DataLoader(
+            Subset(dataset, data_indices), batch_size=batch_size, shuffle=True
+        )
+        self.local_model = copy.deepcopy(global_model).cuda()
+        # self.optimizer = optim.SGD(self.local_model.parameters(), lr=0.003)  # lulu
+        self.criterion = nn.CrossEntropyLoss()
+        self.gradients = None  # Placeholder for storing gradients
+        # Queue to send gradients to aggregator
+        self.aggregator_queue = aggregator_queue
+
+    def run(self):
+        print(f"{self.node_id} starting local training.")
+        # Perform forward and backward passes to compute gradients
+        self.local_model.train()
+        # Initialize moment vectors and time step
+        t = 0  # Time step
+        for data, target in self.data_loader:
+            data = data.cuda()
+            target = target.cuda()
+
+            if t == 0:
+                self.local_model.zero_grad()  # lulu
+            # self.optimizer.zero_grad()  # lulu
+
+            output = self.local_model(data)
+            loss = self.criterion(output, target)
+            # loss = loss / accumulation_steps  # lulu
+            loss.backward()
+
+            if (t + 1) % accumulation_steps == 0:
+                break
+            t += 1
+        self.gradients = [
+            param.grad.clone().detach().cpu() for param in self.local_model.parameters()
+        ]
+        self.aggregator_queue.put(self.gradients)
+        print(f"{self.node_id} sent gradients to aggregator.")
+
+
 class Client(threading.Thread):
     """
     Represents a client that manages its nodes and communicates with other clients.
     """
 
-    def __init__(self, client_id, node_indices_list, dataset, num_clients, clients_list, joint_clients, learn_rate, global_model=None):
+    def __init__(
+        self,
+        client_id,
+        node_indices_list,
+        dataset,
+        num_clients,
+        clients_list,
+        joint_clients,
+        learn_rate,
+        global_model=None,
+    ):
         threading.Thread.__init__(self)
         self.client_id = client_id
-        # self.nodes = []
-        self.gradients = None
+        self.nodes = []
         self.dataset = dataset
-        # Initialize global model if not provided
-        # self.global_model = global_model if global_model else SimpleCNN()
-        # self.global_model = global_model if global_model else ComplexCNN(
-        #     input_channel=1)
+        # Initialize global model if not provided\
         self.global_model = global_model
         self.num_clients = num_clients
         # self.received_models = []  # List to store models received from other clients
@@ -284,58 +309,39 @@ class Client(threading.Thread):
         self.clients_list = clients_list  # Reference to other clients
         self.joint_clients = joint_clients
         self.learn_rate = learn_rate
-        # self.optimizer = torch.optim.Adam(
-        #     self.global_model.parameters(), lr=0.001)
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(self.global_model.parameters(
-        ), lr=self.learn_rate)
-        self.data_loader = DataLoader(
-            Subset(dataset, node_indices_list),
-            batch_size=batch_size,
-            shuffle=True
-        )
-        # print_class_distribution(
-        #     dataset, node_indices_list, title=f"Client {client_id}")
+        self.optimizer = torch.optim.Adam(
+            self.global_model.parameters(), lr=self.learn_rate)
+        # self.optimizer = torch.optim.SGD(
+        #     self.global_model.parameters(), lr=self.learn_rate, momentum=0.9)
+
+        # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
+        # Initialize nodes
+        for i, node_indices in enumerate(node_indices_list):
+            # print_class_distribution(
+            # dataset, node_indices, title=f"Client {client_id} Node {i}")
+            node = Node(
+                f"Client{client_id}_Node{i}",
+                node_indices,
+                dataset,
+                self.global_model,
+                self.aggregator_queue,
+            )
+            self.nodes.append(node)
 
     def run(self):
         print(f"Client {self.client_id} starting.")
         # Start all nodes under this client
-        # for node in self.nodes:
-        #     node.start()
+        for node in self.nodes:
+            node.start()
+        # Wait for all nodes to complete
+        for node in self.nodes:
+            node.join()
         # Collect gradients from nodes
         collected_gradients = []
-        # for _ in self.nodes:
-        #     gradients = self.aggregator_queue.get()
-        #     collected_gradients.append(gradients)
-        # # Wait for all nodes to complete
-        # for node in self.nodes:
-        #     node.join()
-        self.global_model.train()
-        # self.global_model.zero_grad()
-        t = 0
-        for data, target in self.data_loader:
-            data = data.cuda()
-            target = target.cuda()
-            output = self.global_model(data)
-            if t == 0:
-                self.global_model.zero_grad()  # lulu
-            loss = self.criterion(output, target)
-            # self.optimizer.zero_grad()
-            loss = loss/accumulation_steps
-            loss.backward()
-            if t+1 == accumulation_steps:
-                break
-            t = t+1
-            # self.optimizer.step()
-        # Extract gradients
-        self.gradients = [
-            param.grad.clone().detach().cpu() for param in self.global_model.cpu().parameters()
-        ]
-        # self.gradients = [param.grad.clone()
-        #                   for param in self.global_model.cpu().parameters()]
-        # # Send gradients to aggregator
-        # self.aggregator_queue.put(self.gradients)
-        # print(f"Client {self.client_id} collected all gradients.")
+        for _ in self.nodes:
+            gradients = self.aggregator_queue.get()
+            collected_gradients.append(gradients)
+        print(f"Client {self.client_id} collected all gradients.")
         # Aggregate gradients and update the global model
         self.aggregate_and_update(collected_gradients)
         print(f"Client {self.client_id} has updated the global model.")
@@ -345,31 +351,35 @@ class Client(threading.Thread):
         # Average the received models to update the local model
         self.average_models()
         print(
-            f"Client {self.client_id} updated its model by averaging received models.")
+            f"Client {self.client_id} updated its model by averaging received models."
+        )
 
     def aggregate_and_update(self, collected_gradients):
         """
         Aggregates gradients from all nodes and updates the global model.
         """
-        # # Initialize aggregated gradients
-        # aggregated_gradients = [torch.zeros_like(
-        #     param) for param in self.global_model.parameters()]
-        # num_nodes = len(collected_gradients)
-        # # Sum gradients from all nodes
-        # for gradients in collected_gradients:
-        #     for idx, grad in enumerate(gradients):
-        #         aggregated_gradients[idx] += grad
-        # # Average the gradients
-        # aggregated_gradients = [
+        # Initialize aggregated gradients
+        aggregated_gradients = [
+            torch.zeros_like(param).cuda() for param in self.global_model.parameters()
+        ]
+        num_nodes = len(collected_gradients)
+        # Sum gradients from all nodes
+        for gradients in collected_gradients:
+            for idx, grad in enumerate(gradients):
+                aggregated_gradients[idx] += grad.cuda()
+        # Average the gradients
+        # self.aggregated_gradients = [
         #     grad / num_nodes for grad in aggregated_gradients]
-        # # Update global model parameters
+
+        self.aggregated_gradients = [
+            grad for grad in aggregated_gradients]
+        # Update global model parameters
         # self.global_model.train()
         # # with torch.no_grad():
         # for param, grad in zip(self.global_model.parameters(), aggregated_gradients):
         #     # param -= 0.001 * grad  # Update rule with learning rate 0.01
         #     param.grad = grad
         # self.optimizer.step()
-        pass
 
     def communicate(self):
         """
@@ -392,15 +402,17 @@ class Client(threading.Thread):
             target_client.received_models_q.put(
                 copy.deepcopy(self.global_model))
             print(
-                f"Client {self.client_id} sent model parameters to Client {client_id}.")
+                f"Client {self.client_id} sent model parameters to Client {client_id}."
+            )
 
+            # update the parameter if receive others'
             if self.received_models_q.qsize() != 0:
                 tmp_received_models = []
                 for _ in range(self.received_models_q.qsize()):
                     tmp_model = self.received_models_q.get()
                     tmp_received_models.append(tmp_model)
                     self.received_models.put(tmp_model)
-                tmp_received_models.append(self.global_model)
+                # tmp_received_models.append(self.global_model)
                 state_dicts = [model.state_dict()
                                for model in tmp_received_models]
                 # Get keys from the state_dict
@@ -418,13 +430,32 @@ class Client(threading.Thread):
                 # Load averaged parameters into the global model
                 self.global_model.load_state_dict(averaged_state_dict)
 
+            print(
+                "target client ",
+                target_client.client_id,
+                target_client.received_models.qsize(),
+                target_client.received_models_q.qsize(),
+                len(target_client.joint_clients),
+            )
+
     def average_models(self):
         """
         Averages the received models to update the local global model.
         """
         while True:
-            # time.sleep(0.1)
-            if self.received_models.qsize()+self.received_models_q.qsize() == len(self.joint_clients):
+            # print(
+            #     "client ",
+            #     self.client_id,
+            #     self.received_models.qsize(),
+            #     self.received_models_q.qsize(),
+            #     len(self.joint_clients),
+            # )
+            time.sleep(0.1)
+            # if self.received_models_q.qsize() == len(self.joint_clients):
+            #     break
+            if (self.received_models.qsize() + self.received_models_q.qsize()) == len(
+                self.joint_clients
+            ):
                 break
             # parameters_lock[self.client_id].acquire()
             # print("client, received, joint", self.client_id, len(
@@ -433,17 +464,29 @@ class Client(threading.Thread):
             #     break
             # parameters_lock[self.client_id].release()
         # num_models = len(self.received_models)
+        # for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
+        #     if self.client_id == 0:
+        #         print("optimizer 1\n",
+        #               param[0], param.shape, "\n", grad[0], grad.shape)
+        #     break
         if self.received_models.qsize() == len(self.joint_clients):
             self.global_model.train()
-            for param, grad in zip(self.global_model.parameters(), self.gradients):
+            for param, grad in zip(
+                self.global_model.parameters(), self.aggregated_gradients
+            ):
                 # param -= 0.001 * grad  # Update rule with learning rate 0.01
+                # if param.grad is not None:
+                #     param.data -= grad
                 param.grad = grad
             self.optimizer.step()
+            # self.received_models = Queue()
+            # print(f"client {self.client_id}, averge model 1")
         else:
             for _ in range(self.received_models_q.qsize()):
                 self.received_models.put(self.received_models_q.get())
             print(
-                f"Client {self.client_id} received {self.received_models.qsize()} model parameters.")
+                f"Client {self.client_id} received {self.received_models.qsize()} model parameters."
+            )
             # # if not self.received_models:
             # if num_models == 0:
             #     return  # No models received
@@ -451,8 +494,10 @@ class Client(threading.Thread):
             self.received_models.put(self.global_model)
             # Average parameters using state_dict
             # Collect state_dicts from all models
-            state_dicts = [self.received_models.get().state_dict()
-                           for i in range(self.received_models.qsize())]
+            state_dicts = [
+                self.received_models.get().state_dict()
+                for i in range(self.received_models.qsize())
+            ]
             # Get keys from the state_dict
             param_keys = state_dicts[0].keys()
             # Initialize new state_dict for averaged parameters
@@ -466,20 +511,29 @@ class Client(threading.Thread):
                 averaged_state_dict[key] = averaged_param
             # Load averaged parameters into the global model
             self.global_model.load_state_dict(averaged_state_dict)
-            # self.optimizer.zero_grad()
             # Clear received models for the next round
-            self.received_models = Queue()
+            # self.received_models = Queue()
             self.global_model.train()
-            for param, grad in zip(self.global_model.parameters(), self.gradients):
-                # param -= 0.001 * grad  # Update rule with learning rate 0.01
+            for param, grad in zip(
+                self.global_model.parameters(), self.aggregated_gradients
+            ):
+                # if param.grad is not None:
+                #     param.data -= grad  # Modify the data directly
+                # param -= grad  # Update rule with learning rate 0.01
                 param.grad = grad
             self.optimizer.step()
+        # for param, grad in zip(self.global_model.parameters(), self.aggregated_gradients):
+        #     if self.client_id == 0:
+        #         print("optimizer 2\n",
+        #               param[0], param.shape, "\n", grad[0], grad.shape)
+        #     break
+        print(f"client {self.client_id}, averge model complete.")
+
 
 # Define test function
 
 
 def test_global_model(global_model, test_loader):
-    global_model = global_model.cuda()
     global_model.eval()
     correct = 0
     total = 0
@@ -492,6 +546,7 @@ def test_global_model(global_model, test_loader):
             loss = criterion(output, target)
             total_loss += loss.item() * data.size(0)
             _, predicted = torch.max(output.data, 1)
+            # print(predicted)
             total += target.size(0)
             correct += (predicted == target).sum().item()
     accuracy = correct / total
@@ -499,28 +554,29 @@ def test_global_model(global_model, test_loader):
     return accuracy, average_loss
 
 
-# Number of clients
-# num_clients = 24
-
 if __name__ == "__main__":
-    f = open(
-        "./results/res_adpsgd_vgg_niid_{}_{}.txt".format(num_clients, num_rounds), "a+")
+    f = open("./results/test_iid_{}_{}_{}.txt".format(num_clients, num_rounds,
+             "-".join([str(i) for i in num_nodes_list])), "a+")
     # Initialize clients' global models (None at the start)
-    # clients_global_models = [ComplexCNN().cuda() for _ in range(num_clients)]
-    init_model = VGG16()
+    # clients_global_models=list()
+    # for i in range(num_clients):
+    #     torch.manual_seed(seed)
+    #     clients_global_models.append(ComplexCNN().cuda())
+    init_model = SimpleCNN()
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
     # Lists to store accuracy and loss trends
-    accuracy_list = []
-    loss_list = []
     # Prepare test loader
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False)
+
     best_acc, best_round = 0.0, 0
     accuracy_list = []
     loss_list = []
-    node_indices_list = create_niid_splits(
-        train_dataset, client_indices, alpha
+
+    node_indices_list = create_iid_splits(
+        train_dataset, client_indices, num_nodes_list
     )
     for round_num in range(num_rounds):
         start_time = time.time()
@@ -530,11 +586,19 @@ if __name__ == "__main__":
         # Create clients and their nodes for this round
         for i in range(num_clients):
             # node_indices_list = create_noniid_splits(train_dataset, c_indices, 4)
+
             # Use the previous global_model if exists
             global_model = clients_global_models[i]
-            client = Client(i, node_indices_list[i], train_dataset,
-                            num_clients, clients_list, joint_clients[i],
-                            learning_rate, global_model=global_model)
+            client = Client(
+                i,
+                node_indices_list[i],
+                train_dataset,
+                num_clients,
+                clients_list,
+                joint_clients[i],
+                learning_rate,
+                global_model=global_model,
+            )
             clients_list.append(client)
         # Update clients_list in each client
         for client in clients_list:
@@ -546,25 +610,38 @@ if __name__ == "__main__":
         for client in clients_list:
             client.join()
         # Store the updated global models for the next round
-        # clients_global_models = [client.global_model for client in clients_list]
+        clients_global_models = [
+            copy.deepcopy(client.global_model) for client in clients_list]
+        for i, num_node in enumerate(num_nodes_list):
+            clients_list[i].nodes.clear()
+        clients_list.clear()
+        torch.cuda.empty_cache()
+
+        if (round_num+1) % lr_decay_step == 0:
+            learning_rate = learning_rate * lr_decay
+
         # Optionally, you can evaluate the global model here
         # For example, test accuracy on a validation set
         # Store the updated global models for the next round
-        clients_global_models = [
-            copy.deepcopy(client.global_model).cuda() for client in clients_list]
-        clients_list.clear()
-        torch.cuda.empty_cache()
-        if (round_num+1) % lr_decay_step == 0:
-            learning_rate = learning_rate * lr_decay
+        # clients_global_models = [client.global_model for client in clients_list]
         # Evaluate the global model (using the first client's model)
-        global_model = clients_global_models[0]
-        # accuracy, avg_loss = test_global_model(global_model, test_loader)
-        # accuracy_list.append(accuracy)
-        # loss_list.append(avg_loss)
-        # global_model = clients_global_models[0]
-        accuracy, avg_loss = test_global_model(global_model, test_loader)
+
+        each_epoch_acc = []
+        each_epoch_loss = []
+        for mo in clients_global_models:
+            global_model = mo
+            # global_model = clients_global_models[0]
+            acc, loss = test_global_model(global_model, test_loader)
+            each_epoch_acc.append(acc)
+            each_epoch_loss.append(loss)
+        accuracy = np.mean(each_epoch_acc)
+        avg_loss = np.mean(each_epoch_loss)
+
         accuracy_list.append(accuracy)
         loss_list.append(avg_loss)
+        if accuracy >= best_acc:
+            best_acc = accuracy
+            best_round = round_num
         end_time = time.time()
         print(
             f"Round {round_num + 1}: Test Accuracy: {accuracy*100:.2f}%, Test Loss: {avg_loss:.4f}, Learning rate: {learning_rate:.4f}"

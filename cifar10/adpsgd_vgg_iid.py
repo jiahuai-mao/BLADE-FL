@@ -44,7 +44,7 @@ num_clients = 24
 
 
 num_rounds = 2000
-batch_size = 2  # 1024
+batch_size = 128  # 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.1  # 0.2

@@ -13,6 +13,7 @@ import random
 import copy
 import time
 from queue import Queue
+from resnet import ResNet34, ResNet18
 
 seed = 37
 random.seed(seed)
@@ -40,13 +41,12 @@ test_dataset = torchvision.datasets.CIFAR10(
 )
 
 
-# Set the simulation rounds
 num_rounds = 2000
-batch_size = 2  # 1024
+batch_size = 128  # 1024
 accumulation_steps = 1
 total_samples = len(train_dataset)
 fraction = 0.1  # 0.2
-learning_rate = 0.01  # 0.01
+learning_rate = 0.001  # 0.01
 lr_decay = 0.97  # 0.97
 lr_decay_step = 40  # 25
 num_samples = int(total_samples * fraction)
@@ -288,10 +288,10 @@ class Client(threading.Thread):
         self.clients_list = clients_list  # Reference to other clients
         self.joint_clients = joint_clients
         self.learn_rate = learn_rate
-        # self.optimizer = torch.optim.Adam(
-        #     self.global_model.parameters(), lr=self.learn_rate)
-        self.optimizer = torch.optim.SGD(
-            self.global_model.parameters(), lr=self.learn_rate, momentum=0.9)
+        self.optimizer = torch.optim.Adam(
+            self.global_model.parameters(), lr=self.learn_rate)
+        # self.optimizer = torch.optim.SGD(
+        #     self.global_model.parameters(), lr=self.learn_rate, momentum=0.9)
 
         # print(f"client{self.client_id}, joint_clients: {self.joint_clients}")
         # Initialize nodes
@@ -404,6 +404,10 @@ class Client(threading.Thread):
                               for state_dict in state_dicts]
                     # Stack parameters and compute mean
                     stacked_params = torch.stack(params, dim=0)
+                    # Convert to float if necessary
+                    if stacked_params.dtype == torch.long:
+                        stacked_params = stacked_params.float()
+                                        
                     averaged_param = torch.mean(stacked_params, dim=0)
                     averaged_state_dict[key] = averaged_param
                 # Load averaged parameters into the global model
@@ -541,7 +545,7 @@ if __name__ == "__main__":
     # for i in range(num_clients):
     #     torch.manual_seed(seed)
     #     clients_global_models.append(ComplexCNN().cuda())
-    init_model = VGG16()
+    init_model = ResNet18(10)
     clients_global_models = [copy.deepcopy(
         init_model).cuda() for _ in range(num_clients)]
     joint_clients = customize_topology()
