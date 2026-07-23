@@ -11,12 +11,5 @@ data/
 # Experiment outputs
 results/
 
-# LaTeX build artifacts currently produced under the paper folder
-Nature Communications Paper/*.aux
-Nature Communications Paper/*.bbl
-Nature Communications Paper/*.blg
-Nature Communications Paper/*.fdb_latexmk
-Nature Communications Paper/*.fls
-Nature Communications Paper/*.log
-Nature Communications Paper/*.out
-Nature Communications Paper/*.synctex.gz
+# Local paper draft folder
+Nature Communications Paper/
