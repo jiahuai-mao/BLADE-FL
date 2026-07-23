@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import heapq
+
+import torch
+from torch.utils.data import DataLoader
+
+from clustered_dfl.types import Topology
+
+from .base import ClientState, RunArtifacts, TrainingConfig
+from .graph import graph_from_edges, metropolis_weights
+from .local import train_client_from_vector
+from .metrics import evaluate_vector, model_divergence, weighted_global_model
+from .time import cluster_update_times
+from .vector_utils import average_vectors, initial_model_vector
+
+
+class ClusteredTrainingRunner:
+    def __init__(
+        self,
+        clients: list[ClientState],
+        topology: Topology,
+        model_factory,
+        test_loader: DataLoader | None,
+        config: TrainingConfig,
+    ) -> None:
+        self.clients = sorted(clients, key=lambda item: item.client_id)
+        self.clients_by_id = {client.client_id: client for client in self.clients}
+        self.topology = topology
+        self.model_factory = model_factory
+        self.test_loader = test_loader
+        self.config = config
+        self.cluster_graph = _cluster_graph(topology)
+        self.weights = metropolis_weights(self.cluster_graph)
+        self.cluster_sample_counts = [
+            sum(self.clients_by_id[cid].metadata.num_samples for cid in cluster)
+            for cluster in topology.clusters
+        ]
+
+    def run(self) -> RunArtifacts:
+        init = initial_model_vector(self.model_factory, self.config.seed, self.config.device)
+        cluster_models = {cluster_idx: init.clone() for cluster_idx in range(len(self.topology.clusters))}
+        cluster_times = cluster_update_times(self.clients_by_id, self.topology, self.config.local_epochs)
+        virtual_time = 0.0
+        best_accuracy: float | None = None
+        metrics: list[dict] = []
+        transmitted = 0.0
+        model_size_bytes = float(init.numel() * 4)
+
+        best_accuracy = self._append_metrics(metrics, 0, virtual_time, cluster_models, None, best_accuracy, transmitted)
+        for step in range(1, self.config.rounds + 1):
+            losses = []
+            next_cluster_models = {}
+            for cluster_idx, members in enumerate(self.topology.clusters):
+                start = cluster_models[cluster_idx]
+                local_vectors = []
+                local_weights = []
+                for cid in members:
+                    client = self.clients_by_id[cid]
+                    vector, loss = train_client_from_vector(self.model_factory, start, client, self.config)
+                    local_vectors.append(vector)
+                    local_weights.append(float(client.metadata.num_samples))
+                    losses.append(loss)
+                next_cluster_models[cluster_idx] = average_vectors(local_vectors, local_weights)
+                transmitted += 2.0 * model_size_bytes * max(len(members) - 1, 0)
+
+            cluster_models = next_cluster_models
+            if self.config.mixing_interval > 0 and step % self.config.mixing_interval == 0:
+                cluster_models = self._mix_cluster_models(cluster_models)
+                transmitted += 2.0 * model_size_bytes * len(self.topology.leader_edges)
+            virtual_time += max(cluster_times) if cluster_times else 0.0
+
+            if step % self.config.eval_interval == 0 or step == self.config.rounds:
+                best_accuracy = self._append_metrics(
+                    metrics,
+                    step,
+                    virtual_time,
+                    cluster_models,
+                    sum(losses) / len(losses) if losses else None,
+                    best_accuracy,
+                    transmitted,
+                )
+
+        summary = dict(metrics[-1])
+        summary["leaders"] = self.topology.leaders
+        summary["leader_edges"] = self.topology.leader_edges
+        summary["cluster_sizes"] = [len(cluster) for cluster in self.topology.clusters]
+        return RunArtifacts(metrics=metrics, summary=summary)
+
+    def _mix_cluster_models(self, cluster_models: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
+        reference = {idx: vector.clone() for idx, vector in cluster_models.items()}
+        mixed = {}
+        for cluster_idx, row in self.weights.items():
+            mixed[cluster_idx] = average_vectors([reference[nid] for nid in row], [row[nid] for nid in row])
+        return mixed
+
+    def _append_metrics(self, rows, step, virtual_time, cluster_models, train_loss, best_accuracy, transmitted):
+        global_model = weighted_global_model(
+            [cluster_models[idx] for idx in range(len(self.topology.clusters))],
+            self.cluster_sample_counts,
+        )
+        test_loss, test_accuracy = evaluate_vector(self.model_factory, global_model, self.test_loader, self.config.device)
+        if test_accuracy is not None:
+            best_accuracy = test_accuracy if best_accuracy is None else max(best_accuracy, test_accuracy)
+        rows.append(
+            {
+                "step": step,
+                "algorithm": self.config.algorithm,
+                "K": len(self.topology.clusters),
+                "virtual_time": float(virtual_time),
+                "train_loss": train_loss,
+                "test_loss": test_loss,
+                "test_accuracy": test_accuracy,
+                "best_accuracy": best_accuracy,
+                "mean_staleness": 0.0,
+                "max_staleness": 0.0,
+                "leader_edges": str(self.topology.leader_edges),
+                "transmitted_bytes_proxy": float(transmitted),
+                "model_divergence": model_divergence(list(cluster_models.values()), global_model),
+            }
+        )
+        return best_accuracy
+
+
+class ClusteredAsyncTrainingRunner(ClusteredTrainingRunner):
+    def run(self) -> RunArtifacts:
+        init = initial_model_vector(self.model_factory, self.config.seed, self.config.device)
+        cluster_models = {cluster_idx: init.clone() for cluster_idx in range(len(self.topology.clusters))}
+        counters = {cluster_idx: 0 for cluster_idx in cluster_models}
+        cluster_times = cluster_update_times(self.clients_by_id, self.topology, self.config.local_epochs)
+        cache = {
+            cluster_idx: {neigh: cluster_models[neigh].clone() for neigh in self.cluster_graph[cluster_idx]}
+            for cluster_idx in cluster_models
+        }
+        cache_counters = {
+            cluster_idx: {neigh: 0 for neigh in self.cluster_graph[cluster_idx]}
+            for cluster_idx in cluster_models
+        }
+        heap = [(cluster_times[idx], idx) for idx in cluster_models]
+        heapq.heapify(heap)
+        metrics: list[dict] = []
+        best_accuracy: float | None = None
+        transmitted = 0.0
+        model_size_bytes = float(init.numel() * 4)
+        staleness_values: list[float] = []
+        current_time = 0.0
+
+        best_accuracy = self._append_async_metrics(
+            metrics,
+            0,
+            current_time,
+            cluster_models,
+            None,
+            best_accuracy,
+            transmitted,
+            staleness_values,
+        )
+        for event in range(1, self.config.events + 1):
+            current_time, cluster_idx = heapq.heappop(heap)
+            start = cluster_models[cluster_idx]
+
+            local_vectors = []
+            local_weights = []
+            losses = []
+            for cid in self.topology.clusters[cluster_idx]:
+                client = self.clients_by_id[cid]
+                vector, loss = train_client_from_vector(self.model_factory, start, client, self.config)
+                local_vectors.append(vector)
+                local_weights.append(float(client.metadata.num_samples))
+                losses.append(loss)
+            cluster_models[cluster_idx] = average_vectors(local_vectors, local_weights)
+            counters[cluster_idx] += 1
+            transmitted += 2.0 * model_size_bytes * max(len(self.topology.clusters[cluster_idx]) - 1, 0)
+
+            if self.config.mixing_interval > 0 and counters[cluster_idx] % self.config.mixing_interval == 0:
+                row = self.weights[cluster_idx]
+                vectors = []
+                weights = []
+                for node, weight in row.items():
+                    weights.append(weight)
+                    if node == cluster_idx:
+                        vectors.append(cluster_models[cluster_idx])
+                    else:
+                        vectors.append(cache[cluster_idx][node])
+                        stale = counters[node] - cache_counters[cluster_idx][node]
+                        staleness_values.append(float(stale))
+                cluster_models[cluster_idx] = average_vectors(vectors, weights)
+                transmitted += 2.0 * model_size_bytes * len(self.cluster_graph[cluster_idx])
+
+            for neigh in self.cluster_graph[cluster_idx]:
+                cache[neigh][cluster_idx] = cluster_models[cluster_idx].clone()
+                cache_counters[neigh][cluster_idx] = counters[cluster_idx]
+            heapq.heappush(heap, (current_time + cluster_times[cluster_idx], cluster_idx))
+
+            if event % self.config.eval_interval == 0 or event == self.config.events:
+                best_accuracy = self._append_async_metrics(
+                    metrics,
+                    event,
+                    current_time,
+                    cluster_models,
+                    sum(losses) / len(losses) if losses else None,
+                    best_accuracy,
+                    transmitted,
+                    staleness_values,
+                )
+
+        summary = dict(metrics[-1])
+        summary["leaders"] = self.topology.leaders
+        summary["leader_edges"] = self.topology.leader_edges
+        summary["cluster_update_counts"] = counters
+        summary["cluster_sizes"] = [len(cluster) for cluster in self.topology.clusters]
+        return RunArtifacts(metrics=metrics, summary=summary)
+
+    def _append_async_metrics(self, rows, step, virtual_time, cluster_models, train_loss, best_accuracy, transmitted, staleness_values):
+        global_model = weighted_global_model(
+            [cluster_models[idx] for idx in range(len(self.topology.clusters))],
+            self.cluster_sample_counts,
+        )
+        test_loss, test_accuracy = evaluate_vector(self.model_factory, global_model, self.test_loader, self.config.device)
+        if test_accuracy is not None:
+            best_accuracy = test_accuracy if best_accuracy is None else max(best_accuracy, test_accuracy)
+        mean_staleness = sum(staleness_values) / len(staleness_values) if staleness_values else 0.0
+        max_staleness = max(staleness_values) if staleness_values else 0.0
+        rows.append(
+            {
+                "step": step,
+                "algorithm": self.config.algorithm,
+                "K": len(self.topology.clusters),
+                "virtual_time": float(virtual_time),
+                "train_loss": train_loss,
+                "test_loss": test_loss,
+                "test_accuracy": test_accuracy,
+                "best_accuracy": best_accuracy,
+                "mean_staleness": float(mean_staleness),
+                "max_staleness": float(max_staleness),
+                "leader_edges": str(self.topology.leader_edges),
+                "transmitted_bytes_proxy": float(transmitted),
+                "model_divergence": model_divergence(list(cluster_models.values()), global_model),
+            }
+        )
+        return best_accuracy
+
+
+def _cluster_graph(topology: Topology):
+    leader_to_cluster = {leader: idx for idx, leader in enumerate(topology.leaders)}
+    edges = []
+    for left, right in topology.leader_edges:
+        if left in leader_to_cluster and right in leader_to_cluster:
+            edges.append((leader_to_cluster[left], leader_to_cluster[right]))
+    return graph_from_edges(list(range(len(topology.clusters))), edges)

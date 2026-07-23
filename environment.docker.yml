@@ -1,0 +1,21 @@
+name: jh_env
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+  - intel-openmp
+  - mkl<2024
+  - numpy
+  - pandas
+  - matplotlib
+  - tqdm
+  - pillow
+  - libtiff
+  - pip:
+      - --index-url https://download.pytorch.org/whl/cu128
+      - torch==2.7.1
+      - torchvision==0.22.1
+      - torchaudio==2.7.1
