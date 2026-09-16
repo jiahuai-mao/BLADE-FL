@@ -35,6 +35,9 @@ Thumbs.db
 .nature_config/
 tools/
 
+# Local experiment command notebook (may contain machine-specific commands)
+/run.sh
+
 # Manuscript and submission material (never publish from this repository)
 Nature Communications Paper/
 
@@ -92,5 +95,3 @@ iotlab_dfl/FIGURE_QA.md
 
 # Non-core internal design notes (README and environment files remain tracked)
 docs/
-
-run.sh
