@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import sys
 from dataclasses import asdict, is_dataclass
@@ -60,6 +61,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--k", required=True, help="Fixed K integer or `auto`.")
     parser.add_argument("--k-min", type=int, default=2)
+    parser.add_argument("--k-max", default="sqrt", help="Integer K upper bound, `sqrt`, or `none`.")
     parser.add_argument("--min-clients-per-cluster", type=int, default=2)
     parser.add_argument("--alpha-time", type=float, default=0.5)
     parser.add_argument("--alpha-distribution", type=float, default=0.5)
@@ -101,9 +103,11 @@ def main() -> None:
         local_epochs=args.local_epochs,
     )
     if args.k.lower() == "auto":
+        k_max = _resolve_k_max(args.k_max, len(clients))
         topology, metrics = select_best_k_topology(
             clients,
             k_min=args.k_min,
+            k_max=k_max,
             min_clients_per_cluster=args.min_clients_per_cluster,
             alpha_time=args.alpha_time,
             alpha_distribution=args.alpha_distribution,
@@ -150,6 +154,21 @@ def main() -> None:
         f"swaps={metrics['accepted_swaps']} "
         f"seed={args.seed}"
     )
+
+
+def _resolve_k_max(k_max: str, num_clients: int) -> int | None:
+    value = str(k_max).strip().lower()
+    if value in {"none", "no", "null", "unbounded"}:
+        return None
+    if value == "sqrt":
+        return max(1, int(math.floor(math.sqrt(num_clients))))
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError("--k-max must be an integer, `sqrt`, or `none`.") from exc
+    if parsed <= 0:
+        raise ValueError("--k-max must be positive when provided.")
+    return parsed
 
 
 if __name__ == "__main__":

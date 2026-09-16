@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -13,6 +14,7 @@ from .types import ClientMetadata, Topology
 @dataclass(frozen=True)
 class ClusteringParams:
     k_min: int = 2
+    k_max: int | None = None
     min_clients_per_cluster: int = 2
     alpha_time: float = 0.5
     alpha_distribution: float = 0.5
@@ -34,14 +36,18 @@ def compute_capacities(num_clients: int, k: int) -> list[int]:
     return [base + 1 if idx < remainder else base for idx in range(k)]
 
 
-def candidate_k_values(num_clients: int, k_min: int, min_clients_per_cluster: int) -> list[int]:
+def candidate_k_values(num_clients: int, k_min: int, min_clients_per_cluster: int, k_max: int | None = None) -> list[int]:
     if num_clients <= 0:
         raise ValueError("num_clients must be positive.")
     if k_min <= 0:
         raise ValueError("k_min must be positive.")
     if min_clients_per_cluster <= 0:
         raise ValueError("min_clients_per_cluster must be positive.")
+    if k_max is not None and k_max <= 0:
+        raise ValueError("k_max must be positive when provided.")
     upper = num_clients // min_clients_per_cluster
+    if k_max is not None:
+        upper = min(upper, k_max)
     if upper < k_min:
         return []
     return list(range(k_min, upper + 1))
@@ -483,6 +489,7 @@ def build_deterministic_balanced_clusters(
 def select_best_k_topology(
     clients: list[ClientMetadata],
     k_min: int = 2,
+    k_max: int | None = None,
     min_clients_per_cluster: int = 2,
     alpha_time: float = 0.5,
     alpha_distribution: float = 0.5,
@@ -497,13 +504,14 @@ def select_best_k_topology(
     if not 0 <= lambda_communication <= 1:
         raise ValueError("lambda_communication must be in [0, 1].")
 
-    candidates = candidate_k_values(len(clients), k_min, min_clients_per_cluster)
+    candidates = candidate_k_values(len(clients), k_min, min_clients_per_cluster, k_max)
     if not candidates:
         raise ValueError("No candidate K values for the active clients.")
 
     rows = []
     feasible: list[tuple[int, Topology, dict, float]] = []
     for k in candidates:
+        candidate_start = time.perf_counter()
         try:
             topology, metrics = build_deterministic_balanced_clusters(
                 clients,
@@ -515,6 +523,7 @@ def select_best_k_topology(
                 max_swaps=max_swaps,
                 feasible_graph=feasible_graph,
             )
+            candidate_wall_time = time.perf_counter() - candidate_start
             proxy = communication_proxy(
                 num_clients=len(clients),
                 k=k,
@@ -539,10 +548,12 @@ def select_best_k_topology(
                 "topology_score": None,
                 "selected": False,
                 "failure_reason": None,
+                "construction_wall_time_sec": float(candidate_wall_time),
             }
             rows.append(row)
             feasible.append((k, topology, metrics, proxy))
         except Exception as exc:
+            candidate_wall_time = time.perf_counter() - candidate_start
             rows.append(
                 {
                     "K": k,
@@ -561,6 +572,7 @@ def select_best_k_topology(
                     "topology_score": None,
                     "selected": False,
                     "failure_reason": str(exc),
+                    "construction_wall_time_sec": float(candidate_wall_time),
                 }
             )
 
@@ -678,6 +690,7 @@ def refresh_topology(
         previous_k,
         len(updated_clients),
         params.k_min,
+        params.k_max,
         params.min_clients_per_cluster,
     ):
         log["repair_attempted"] = True
@@ -710,6 +723,7 @@ def refresh_topology(
         topology, metrics = select_best_k_topology(
             updated_clients,
             k_min=params.k_min,
+            k_max=params.k_max,
             min_clients_per_cluster=params.min_clients_per_cluster,
             alpha_time=params.alpha_time,
             alpha_distribution=params.alpha_distribution,
@@ -980,8 +994,10 @@ def _repair_capacity_by_moves(
     return True
 
 
-def _is_k_refresh_feasible(k: int, num_clients: int, k_min: int, min_clients_per_cluster: int) -> bool:
+def _is_k_refresh_feasible(k: int, num_clients: int, k_min: int, k_max: int | None, min_clients_per_cluster: int) -> bool:
     if num_clients <= 0:
+        return False
+    if k_max is not None and k > k_max:
         return False
     return k_min <= k <= num_clients and k <= num_clients // min_clients_per_cluster
 

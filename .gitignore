@@ -1,15 +1,94 @@
-# Python cache files generated in this project
+# -----------------------------------------------------------------------------
+# NC public repository: keep only reproducible training source and environment
+# files. Manuscripts, local datasets, experiment artifacts, and analysis
+# outputs stay local.
+# -----------------------------------------------------------------------------
+
+# Python caches, virtual environments, and test/tool caches
 __pycache__/
 *.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Runtime and plotting caches
+# Editors, OS metadata, and local Codex/agent state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.agents/
+.codex/
+
+# Runtime caches and local helper binaries/configuration
 .matplotlib-cache/
+.nature-figure.json
+.nature_config/
+tools/
 
-# Local datasets downloaded/prepared for experiments
-data/
-
-# Experiment outputs
-results/
-
-# Local paper draft folder
+# Manuscript and submission material (never publish from this repository)
 Nature Communications Paper/
+
+# Downloaded or prepared datasets
+data/
+iotlab_dfl/bundle*/
+
+# Training outputs, checkpoints, logs, and downloaded physical-test results
+results/
+iotlab_dfl/results*/
+checkpoints/
+runs/
+logs/
+wandb/
+tensorboard/
+*.log
+*.jsonl
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.npz
+*.npy
+*.pkl
+*.pickle
+
+# Generated archives and temporary files
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# Paper-figure analysis and plotting code are outside the core training release
+scripts/plot_*.py
+scripts/summarize_*.py
+iotlab_dfl/plot_*.py
+iotlab_dfl/analysis*/
+iotlab_dfl/FIGURE_QA.md
+
+# Generated figures and tabular analysis artifacts
+*.pdf
+*.svg
+*.tif
+*.tiff
+*.png
+*.jpg
+*.jpeg
+*.csv
+
+# Non-core internal design notes (README and environment files remain tracked)
+docs/

@@ -8,7 +8,7 @@ from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 
 def model_to_vector(model: nn.Module) -> torch.Tensor:
-    return parameters_to_vector(model.parameters()).detach().cpu().clone()
+    return parameters_to_vector(model.parameters()).detach().clone()
 
 
 def vector_to_model(vector: torch.Tensor, model: nn.Module) -> nn.Module:
@@ -20,7 +20,8 @@ def vector_to_model(vector: torch.Tensor, model: nn.Module) -> nn.Module:
 def average_vectors(vectors: Sequence[torch.Tensor], weights: Sequence[float] | None = None) -> torch.Tensor:
     if not vectors:
         raise ValueError("vectors must not be empty.")
-    stacked = torch.stack([vector.detach().cpu() for vector in vectors])
+    device = vectors[0].device
+    stacked = torch.stack([vector.detach().to(device) for vector in vectors])
     if weights is None:
         return stacked.mean(dim=0)
     weight_tensor = torch.tensor(weights, dtype=stacked.dtype, device=stacked.device)

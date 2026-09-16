@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
-from .base import ClientState, RunArtifacts, TrainingConfig
+from .base import ClientState, RunArtifacts, TrainingConfig, log_progress
 from .local import train_client_from_vector
 from .metrics import evaluate_vector
 from .time import client_train_time
@@ -22,6 +22,8 @@ class FedAvgRunner:
         self.model_factory = model_factory
         self.test_loader = test_loader
         self.config = config
+        self.train_model = self.model_factory().to(self.config.device)
+        self.eval_model = self.model_factory().to(self.config.device)
 
     def run(self) -> RunArtifacts:
         global_model = initial_model_vector(self.model_factory, self.config.seed, self.config.device)
@@ -37,7 +39,13 @@ class FedAvgRunner:
             local_weights = []
             losses = []
             for client in self.clients:
-                vector, loss = train_client_from_vector(self.model_factory, global_model, client, self.config)
+                vector, loss = train_client_from_vector(
+                    self.model_factory,
+                    global_model,
+                    client,
+                    self.config,
+                    model=self.train_model,
+                )
                 local_vectors.append(vector)
                 local_weights.append(float(client.metadata.num_samples))
                 losses.append(loss)
@@ -61,11 +69,16 @@ class FedAvgRunner:
         return RunArtifacts(metrics=metrics, summary=summary)
 
     def _append_metrics(self, rows, step, virtual_time, global_model, train_loss, best_accuracy, transmitted):
-        test_loss, test_accuracy = evaluate_vector(self.model_factory, global_model, self.test_loader, self.config.device)
+        test_loss, test_accuracy, test_macro_f1 = evaluate_vector(
+            self.model_factory,
+            global_model,
+            self.test_loader,
+            self.config.device,
+            model=self.eval_model,
+        )
         if test_accuracy is not None:
             best_accuracy = test_accuracy if best_accuracy is None else max(best_accuracy, test_accuracy)
-        rows.append(
-            {
+        row = {
                 "step": step,
                 "algorithm": "fedavg",
                 "K": "",
@@ -73,6 +86,7 @@ class FedAvgRunner:
                 "train_loss": train_loss,
                 "test_loss": test_loss,
                 "test_accuracy": test_accuracy,
+                "test_macro_f1": test_macro_f1,
                 "best_accuracy": best_accuracy,
                 "mean_staleness": 0.0,
                 "max_staleness": 0.0,
@@ -80,5 +94,6 @@ class FedAvgRunner:
                 "transmitted_bytes_proxy": float(transmitted),
                 "model_divergence": 0.0,
             }
-        )
+        rows.append(row)
+        log_progress(row, self.config.rounds)
         return best_accuracy

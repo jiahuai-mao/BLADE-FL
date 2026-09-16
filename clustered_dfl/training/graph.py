@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import random
 from collections.abc import Mapping, Sequence
+from typing import Dict, Set
 
 
-Graph = dict[int, set[int]]
+Graph = Dict[int, Set[int]]
 
 
 def build_client_graph(
