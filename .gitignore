@@ -92,3 +92,5 @@ iotlab_dfl/FIGURE_QA.md
 
 # Non-core internal design notes (README and environment files remain tracked)
 docs/
+
+run.sh
